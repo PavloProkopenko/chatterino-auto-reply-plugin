@@ -33,8 +33,9 @@ local HELP = {
     "/autoreply set live on|off",
     "Счётчик времени: чат-команда, в ответ на которую бот пишет, сколько прошло с момента включения (например, сколько стример играет). В ответе обязательно {time}; можно {user}. Счётчик стартует сразу при добавлении, привязан к текущему каналу. smart = «2 ч 35 мин» (меньше минуты: «только начал»), full = 2:35:07. Если стрим ушёл в офлайн (более 2 минут), счётчик сам выключается.",
     '/autoreply timer add "<!команда>" [smart|full] <ответ с {time}>',
-    "Управление счётчиками: list = показать с текущим временем, on = включить (отсчёт с нуля), off = выключить, reset = начать отсчёт заново, remove = удалить, format = формат времени.",
-    "/autoreply timer list | on <id> | off <id> | reset <id> | remove <id> | format <id> smart|full",
+    "Управление счётчиками: list = показать с текущим временем, on = включить (отсчёт с нуля), off = выключить, reset = начать отсчёт заново, set = задать, сколько уже прошло, remove = удалить, format = формат времени.",
+    "/autoreply timer list | on <id> [время] | off <id> | reset <id> [время] | set <id> <время> | remove <id> | format <id> smart|full",
+    "Если забыли включить вовремя: укажите, сколько уже прошло (15m, 1h30m). Пример: timer set 1 1h30m, и ответ сразу покажет «1 ч 30 мин».",
     "Что делать счётчику при смене категории (игры) на стриме: reset = начать заново (по умолчанию), stop = выключить, off = ничего не делать.",
     "/autoreply timer category <id> reset|stop|off",
     "Перечитать настройки из файла data/config.json (если вы правили его вручную).",
@@ -328,15 +329,30 @@ local function cmd_timer(ctx, words)
         say(ctx, "usage: /autoreply timer add|list|on|off|reset|remove|format|category ...  (id from timer list)")
         return
     end
+    -- optional start offset for on/reset/set, e.g. 1h30m = "already running for 1h30m"
+    local offset
+    if sub == "on" or sub == "reset" or sub == "set" then
+        if words[5] then
+            offset = util.parse_duration(words[5])
+            if not offset then
+                say(ctx, "invalid time '" .. words[5] .. "'. Use e.g. 15m, 1h30m.")
+                return
+            end
+        elseif sub == "set" then
+            say(ctx, "usage: /autoreply timer set <id> <time>, e.g. timer set 1 1h30m")
+            return
+        end
+    end
+    local from = offset and util.format_elapsed(offset, "smart") or "0"
     if sub == "on" then
-        E.set_timer_enabled(t, true)
-        say(ctx, string.format("timer #%d started from 0.", id))
+        E.set_timer_enabled(t, true, offset)
+        say(ctx, string.format("timer #%d started from %s.", id, from))
     elseif sub == "off" then
         E.set_timer_enabled(t, false)
         say(ctx, string.format("timer #%d stopped.", id))
-    elseif sub == "reset" then
-        E.reset_timer(t)
-        say(ctx, string.format("timer #%d restarted from 0.", id))
+    elseif sub == "reset" or sub == "set" then
+        E.reset_timer(t, offset)
+        say(ctx, string.format("timer #%d restarted from %s.", id, from))
     elseif sub == "remove" then
         table.remove(timers, idx)
         E.save()

@@ -204,9 +204,9 @@ local function stream_status(t)
     return nil
 end
 
-local function start_counting(t)
+local function start_counting(t, offset_s)
     t.enabled = true
-    t.started_at = util.now_s()
+    t.started_at = util.now_s() - (offset_s or 0)
     timer_offline[t.id] = nil
     local st = stream_status(t)
     t.game_id = (st and st.live and st.game_id ~= "" and st.game_id) or nil
@@ -241,9 +241,9 @@ function E.add_timer(trigger, channel, reply, format)
     return t.id
 end
 
-function E.set_timer_enabled(t, on)
+function E.set_timer_enabled(t, on, offset_s)
     if on then
-        start_counting(t)
+        start_counting(t, offset_s)
     else
         t.enabled = false
         t.started_at = nil
@@ -253,8 +253,8 @@ function E.set_timer_enabled(t, on)
     E.save()
 end
 
-function E.reset_timer(t)
-    start_counting(t)
+function E.reset_timer(t, offset_s)
+    start_counting(t, offset_s)
     E.save()
 end
 
