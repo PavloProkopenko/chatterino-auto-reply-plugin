@@ -1,3 +1,6 @@
 # Per-user runtime data (contains your channels/rules)
 auto-reply/data/
 .DS_Store
+
+# Private notes for Claude Code (local only)
+CLAUDE.md
