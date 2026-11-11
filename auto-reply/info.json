@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Chatterino/chatterino2/master/docs/plugin-info.schema.json",
+  "name": "Auto Reply",
+  "description": "Automatically replies in chosen channels when a trigger message appears. Configure with /autoreply help.",
+  "authors": ["w0ntx"],
+  "homepage": "",
+  "tags": ["auto-reply", "chat", "utility"],
+  "version": "0.1.1",
+  "license": "MIT",
+  "permissions": [
+    { "type": "FilesystemRead" },
+    { "type": "FilesystemWrite" }
+  ]
+}
