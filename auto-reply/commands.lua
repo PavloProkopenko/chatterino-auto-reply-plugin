@@ -5,51 +5,136 @@ local E = require("engine")
 
 local M = {}
 
-local HELP = {
-    "=== Авто-ответ: справка ===",
-    "Включить авто-ответ. Период: 30m = 30 минут, 2h = 2 часа, 1d = 1 день, 1h30m = 1,5 часа. Без периода работает, пока открыто приложение. forever = всегда (сохраняется после перезапуска).",
-    "/autoreply on [30m|2h|1d|forever]",
-    "Выключить авто-ответ полностью. toggle = переключить вкл/выкл одним действием. status = показать текущее состояние и настройки.",
-    "/autoreply off | toggle | status",
-    "Каналы, в которых работает авто-ответ. add = добавить, remove = убрать, list = показать список. Канал должен быть открыт в окне (сплите).",
-    "/autoreply channel add|remove|list <канал>",
-    "Добавить правило: если сообщение подходит под условие, бот отправит ответ. keyword = текст встречается где угодно в сообщении (например !test). word = отдельное слово. pattern = шаблон Lua (для опытных, это не regex). Фразу с пробелами берите в кавычки.",
-    '/autoreply add keyword|word|pattern "<текст>" <ответ>',
-    "anyword = любое из нескольких слов (отдельное слово, регистр не важен, работает и с русским). Варианты через знак |. Ответ может содержать {user}: туда подставится ник написавшего. Пример: add mention + anyword \"qq|привет|hi\" @{user} qq",
-    '/autoreply add anyword "<слово1|слово2|слово3>" <ответ>',
-    "Правило на упоминание: срабатывает, когда кто-то пишет @ваш_ник или ваш ник.",
-    "/autoreply add mention <ответ>",
-    "Правило по типу сообщения: first = первое сообщение зрителя, highlighted = выделенное, reply = ответ на сообщение, announcement = объявление, sub = подписка, cheer = биты.",
-    "/autoreply add flag first|highlighted|reply|announcement|sub|cheer <ответ>",
-    "Несколько условий сразу: знак + означает И, то есть должны совпасть ВСЕ условия. Пример: add mention + keyword qq Привет!",
-    "/autoreply add <условие> + <условие> <ответ>",
-    "Управление правилами: list = показать все с номерами, remove = удалить, enable/disable = включить/выключить одно правило. <id> это номер из list.",
-    "/autoreply list | remove <id> | enable <id> | disable <id>",
-    "Игнор-список: сообщения этих пользователей не вызывают ответ (например, другие боты вроде Nightbot). Ваш собственный аккаунт игнорируется всегда.",
-    "/autoreply ignore add|remove|list <пользователь>",
-    "Настройки пауз (в секундах). usercd = пауза для одного пользователя: бот не ответит ему чаще, чем раз в N секунд (по умолчанию 60). rulecd = пауза для одного правила в канале (по умолчанию 10). gap = минимальный промежуток между любыми двумя ответами бота (по умолчанию 2, минимум 1).",
-    "/autoreply set usercd|rulecd|gap <секунды>",
-    "Отвечать только когда стрим идёт (live): on = да, off = в любое время.",
-    "/autoreply set live on|off",
-    "Счётчик времени: чат-команда, в ответ на которую бот пишет, сколько прошло с момента включения (например, сколько стример играет). В ответе обязательно {time}; можно {user}. Счётчик стартует сразу при добавлении, привязан к текущему каналу. smart = «2 ч 35 мин» (меньше минуты: «только начал»), full = 2:35:07. Если стрим ушёл в офлайн (более 2 минут), счётчик сам выключается.",
-    '/autoreply timer add "<!команда>" [smart|full] <ответ с {time}>',
-    "Управление счётчиками: list = показать с текущим временем, on = включить (отсчёт с нуля), off = выключить, reset = начать отсчёт заново, set = задать, сколько уже прошло, remove = удалить, format = формат времени.",
-    "/autoreply timer list | on <id> [время] | off <id> | reset <id> [время] | set <id> <время> | remove <id> | format <id> smart|full",
-    "Если забыли включить вовремя: укажите, сколько уже прошло (15m, 1h30m). Пример: timer set 1 1h30m, и ответ сразу покажет «1 ч 30 мин».",
-    "Что делать счётчику при смене категории (игры) на стриме: reset = начать заново (по умолчанию), stop = выключить, off = ничего не делать.",
-    "/autoreply timer category <id> reset|stop|off",
-    "Перечитать настройки из файла data/config.json (если вы правили его вручную).",
-    "/autoreply reload",
-    "Важно: ответ работает только когда авто-ответ включён, и правило без текста ответа никогда не срабатывает.",
+-- Help is layered: index -> topic -> "all". Each topic's lines keep the
+-- convention "explanation line, then syntax line".
+local TOPICS = {
+    {
+        key = "on", aliases = { "off", "toggle", "status" },
+        summary = "включить/выключить авто-ответ, показать состояние",
+        lines = {
+            "Включить авто-ответ. Период: 30m = 30 минут, 2h = 2 часа, 1d = 1 день, 1h30m = 1,5 часа. Без периода работает, пока открыто приложение. forever = всегда (сохраняется после перезапуска).",
+            "/autoreply on [30m|2h|1d|forever]",
+            "Выключить авто-ответ полностью. toggle = переключить вкл/выкл одним действием. status = показать текущее состояние и настройки.",
+            "/autoreply off | toggle | status",
+        },
+    },
+    {
+        key = "channel", aliases = { "channels" },
+        summary = "каналы, в которых работает авто-ответ",
+        lines = {
+            "Каналы, в которых работает авто-ответ. add = добавить, remove = убрать, list = показать список. Канал должен быть открыт в окне (сплите).",
+            "/autoreply channel add|remove|list <канал>",
+        },
+    },
+    {
+        key = "add", aliases = { "rule" },
+        summary = "добавить правило (keyword, word, anyword, mention, flag, pattern, условия через +)",
+        lines = {
+            "Добавить правило: если сообщение подходит под условие, бот отправит ответ. keyword = текст встречается где угодно в сообщении (например !test). word = отдельное слово. pattern = шаблон Lua (для опытных, это не regex). Фразу с пробелами берите в кавычки.",
+            '/autoreply add keyword|word|pattern "<текст>" <ответ>',
+            "anyword = любое из нескольких слов (отдельное слово, регистр не важен, работает и с русским). Варианты через знак |. Ответ может содержать {user}: туда подставится ник написавшего. Пример: add mention + anyword \"qq|привет|hi\" @{user} qq",
+            '/autoreply add anyword "<слово1|слово2|слово3>" <ответ>',
+            "Правило на упоминание: срабатывает, когда кто-то пишет @ваш_ник или ваш ник.",
+            "/autoreply add mention <ответ>",
+            "Правило по типу сообщения: first = первое сообщение зрителя, highlighted = выделенное, reply = ответ на сообщение, announcement = объявление, sub = подписка, cheer = биты.",
+            "/autoreply add flag first|highlighted|reply|announcement|sub|cheer <ответ>",
+            "Несколько условий сразу: знак + означает И, то есть должны совпасть ВСЕ условия. Пример: add mention + keyword qq Привет!",
+            "/autoreply add <условие> + <условие> <ответ>",
+            "Важно: ответ работает только когда авто-ответ включён, и правило без текста ответа никогда не срабатывает.",
+        },
+    },
+    {
+        key = "rules", aliases = { "list", "remove", "enable", "disable" },
+        summary = "список правил, удаление, включение/выключение",
+        lines = {
+            "Управление правилами: list = показать все с номерами, remove = удалить, enable/disable = включить/выключить одно правило. <id> это номер из list.",
+            "/autoreply list | remove <id> | enable <id> | disable <id>",
+        },
+    },
+    {
+        key = "ignore", aliases = {},
+        summary = "игнор-список пользователей (например, другие боты)",
+        lines = {
+            "Игнор-список: сообщения этих пользователей не вызывают ответ (например, другие боты вроде Nightbot). Ваш собственный аккаунт игнорируется всегда.",
+            "/autoreply ignore add|remove|list <пользователь>",
+        },
+    },
+    {
+        key = "set", aliases = {},
+        summary = "паузы между ответами и режим «только на стриме»",
+        lines = {
+            "Настройки пауз (в секундах). usercd = пауза для одного пользователя: бот не ответит ему чаще, чем раз в N секунд (по умолчанию 60). rulecd = пауза для одного правила в канале (по умолчанию 10). gap = минимальный промежуток между любыми двумя ответами бота (по умолчанию 2, минимум 1).",
+            "/autoreply set usercd|rulecd|gap <секунды>",
+            "Отвечать только когда стрим идёт (live): on = да, off = в любое время.",
+            "/autoreply set live on|off",
+        },
+    },
+    {
+        key = "timer", aliases = { "timers" },
+        summary = "счётчики времени ({time}: сколько прошло с момента включения)",
+        lines = {
+            "Счётчик времени: чат-команда, в ответ на которую бот пишет, сколько прошло с момента включения (например, сколько стример играет). В ответе обязательно {time}; можно {user}. Счётчик стартует сразу при добавлении, привязан к текущему каналу. smart = «2 ч 35 мин» (меньше минуты: «только начал»), full = 2:35:07. Если стрим ушёл в офлайн (более 2 минут), счётчик сам выключается.",
+            '/autoreply timer add "<!команда>" [smart|full] <ответ с {time}>',
+            "Управление счётчиками: list = показать с текущим временем, on = включить (отсчёт с нуля), off = выключить, reset = начать отсчёт заново, set = задать, сколько уже прошло, remove = удалить, format = формат времени.",
+            "/autoreply timer list | on <id> [время] | off <id> | reset <id> [время] | set <id> <время> | remove <id> | format <id> smart|full",
+            "Если забыли включить вовремя: укажите, сколько уже прошло (15m, 1h30m). Пример: timer set 1 1h30m, и ответ сразу покажет «1 ч 30 мин».",
+            "Что делать счётчику при смене категории (игры) на стриме: reset = начать заново (по умолчанию), stop = выключить, off = ничего не делать.",
+            "/autoreply timer category <id> reset|stop|off",
+        },
+    },
+    {
+        key = "reload", aliases = {},
+        summary = "перечитать data/config.json",
+        lines = {
+            "Перечитать настройки из файла data/config.json (если вы правили его вручную).",
+            "/autoreply reload",
+        },
+    },
 }
+
+local TOPIC_BY_NAME = {}
+for _, t in ipairs(TOPICS) do
+    TOPIC_BY_NAME[t.key] = t
+    for _, a in ipairs(t.aliases) do
+        TOPIC_BY_NAME[a] = t
+    end
+end
 
 local function say(ctx, text)
     ctx.channel:add_system_message("[auto-reply] " .. text)
 end
 
-local function help(ctx)
-    for _, line in ipairs(HELP) do
-        ctx.channel:add_system_message(line)
+local function help_index(ctx)
+    local out = ctx.channel
+    out:add_system_message("=== Авто-ответ: справка ===")
+    for _, t in ipairs(TOPICS) do
+        out:add_system_message(string.format("/autoreply help %s — %s", t.key, t.summary))
+    end
+    out:add_system_message("/autoreply help all — вся справка целиком")
+end
+
+local function help(ctx, arg)
+    local out = ctx.channel
+    arg = arg and arg:lower() or nil
+    if arg == nil then
+        help_index(ctx)
+    elseif arg == "all" or arg == "full" then
+        out:add_system_message("=== Авто-ответ: полная справка ===")
+        for _, t in ipairs(TOPICS) do
+            out:add_system_message("-- " .. t.key .. " --")
+            for _, line in ipairs(t.lines) do
+                out:add_system_message(line)
+            end
+        end
+    elseif TOPIC_BY_NAME[arg] then
+        local t = TOPIC_BY_NAME[arg]
+        out:add_system_message("=== Справка: " .. t.key .. " ===")
+        for _, line in ipairs(t.lines) do
+            out:add_system_message(line)
+        end
+    else
+        out:add_system_message("Нет такого раздела: " .. arg)
+        help_index(ctx)
     end
 end
 
@@ -407,6 +492,8 @@ function M.handle(ctx)
         E.load()
         say(ctx, "config reloaded from disk.")
         status(ctx)
+    elseif sub == "help" then
+        help(ctx, words[3])
     else
         help(ctx)
     end
