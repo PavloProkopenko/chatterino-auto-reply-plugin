@@ -32,6 +32,11 @@ Chatterino plugins cannot add windows or settings pages, so everything is config
   ```
   /autoreply add flag first Welcome to the chat, @{user}!
   ```
+- **"How long has the streamer been playing?"** A time counter answers `!game` with the elapsed time (`2 ч 35 мин`, or `только начал` under a minute). It stops by itself when the stream goes offline and restarts when the category changes:
+  ```
+  /autoreply timer add "!game" @{user} он играет {time}
+  /autoreply timer list
+  ```
 
 Handy commands: `/autoreply status`, `/autoreply list`, `/autoreply off`.
 

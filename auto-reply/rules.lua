@@ -60,8 +60,8 @@ end
 local function split_alternatives(str)
     local out = {}
     for part in (str .. "|"):gmatch("(.-)|") do
-        part = part:match("^%s*(.-)%s*$")
-        if part ~= "" then out[#out + 1] = part end
+        local trimmed = part:match("^%s*(.-)%s*$")
+        if trimmed ~= "" then out[#out + 1] = trimmed end
     end
     return out
 end

@@ -19,6 +19,10 @@ function M.defaults()
         only_when_live = false,
         next_rule_id = 1,
         rules = {},
+        -- time counters: {id, trigger, channel, reply, format, on_category,
+        -- enabled, started_at, game_id}
+        next_timer_id = 1,
+        timers = {},
     }
 end
 
@@ -62,6 +66,22 @@ function M.load()
     if type(cfg.channels) ~= "table" then cfg.channels = {} end
     if type(cfg.ignore_users) ~= "table" then cfg.ignore_users = {} end
     if type(cfg.rules) ~= "table" then cfg.rules = {} end
+    if type(cfg.timers) ~= "table" then cfg.timers = {} end
+    if type(cfg.next_timer_id) ~= "number" then cfg.next_timer_id = 1 end
+    local good = {}
+    for _, t in ipairs(cfg.timers) do
+        if type(t) == "table" and type(t.trigger) == "string" and type(t.channel) == "string"
+            and type(t.reply) == "string" and type(t.id) == "number" then
+            if type(t.started_at) ~= "number" then
+                t.started_at = nil
+                t.enabled = false
+            end
+            if t.format ~= "full" then t.format = "smart" end
+            if t.on_category ~= "stop" and t.on_category ~= "off" then t.on_category = "reset" end
+            good[#good + 1] = t
+        end
+    end
+    cfg.timers = good
     for _, key in ipairs({ "per_user_cooldown", "per_rule_cooldown", "global_min_gap" }) do
         if type(cfg[key]) ~= "number" or cfg[key] < 0 then
             cfg[key] = M.defaults()[key]

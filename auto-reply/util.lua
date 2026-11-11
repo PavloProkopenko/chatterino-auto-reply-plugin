@@ -58,6 +58,30 @@ function M.format_duration(sec)
     return table.concat(out, " ")
 end
 
+M.JUST_STARTED = "только начал"
+
+-- Elapsed time for the {time} placeholder.
+-- "smart": <1 min -> "только начал", <1h -> "45 мин", else "2 ч 35 мин" / "2 ч".
+-- "full": "h:mm:ss".
+function M.format_elapsed(sec, fmt)
+    sec = math.max(0, math.floor(sec or 0))
+    if fmt == "full" then
+        return string.format("%d:%02d:%02d", sec // 3600, (sec % 3600) // 60, sec % 60)
+    end
+    local h = sec // 3600
+    local m = (sec % 3600) // 60
+    if h == 0 and m == 0 then
+        return M.JUST_STARTED
+    end
+    if h == 0 then
+        return m .. " мин"
+    end
+    if m == 0 then
+        return h .. " ч"
+    end
+    return h .. " ч " .. m .. " мин"
+end
+
 function M.contains(list, value)
     for i, v in ipairs(list) do
         if v == value then

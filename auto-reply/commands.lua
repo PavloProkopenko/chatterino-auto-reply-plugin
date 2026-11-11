@@ -31,6 +31,12 @@ local HELP = {
     "/autoreply set usercd|rulecd|gap <секунды>",
     "Отвечать только когда стрим идёт (live): on = да, off = в любое время.",
     "/autoreply set live on|off",
+    "Счётчик времени: чат-команда, в ответ на которую бот пишет, сколько прошло с момента включения (например, сколько стример играет). В ответе обязательно {time}; можно {user}. Счётчик стартует сразу при добавлении, привязан к текущему каналу. smart = «2 ч 35 мин» (меньше минуты: «только начал»), full = 2:35:07. Если стрим ушёл в офлайн (более 2 минут), счётчик сам выключается.",
+    '/autoreply timer add "<!команда>" [smart|full] <ответ с {time}>',
+    "Управление счётчиками: list = показать с текущим временем, on = включить (отсчёт с нуля), off = выключить, reset = начать отсчёт заново, remove = удалить, format = формат времени.",
+    "/autoreply timer list | on <id> | off <id> | reset <id> | remove <id> | format <id> smart|full",
+    "Что делать счётчику при смене категории (игры) на стриме: reset = начать заново (по умолчанию), stop = выключить, off = ничего не делать.",
+    "/autoreply timer category <id> reset|stop|off",
     "Перечитать настройки из файла data/config.json (если вы правили его вручную).",
     "/autoreply reload",
     "Важно: ответ работает только когда авто-ответ включён, и правило без текста ответа никогда не срабатывает.",
@@ -68,6 +74,11 @@ local function status(ctx)
     for _, r in ipairs(cfg.rules) do
         if rules.is_usable(r) then usable = usable + 1 end
     end
+    local running = 0
+    for _, t in ipairs(cfg.timers) do
+        if t.enabled and t.started_at then running = running + 1 end
+    end
+    say(ctx, string.format("timers: %d (%d running)", #cfg.timers, running))
     say(ctx, string.format("rules: %d (%d active) | cooldowns user %ds, rule %ds, gap %ds | only when live: %s",
         #cfg.rules, usable, cfg.per_user_cooldown, cfg.per_rule_cooldown,
         cfg.global_min_gap, cfg.only_when_live and "yes" or "no"))
@@ -268,6 +279,81 @@ local function cmd_set(ctx, words)
     end
 end
 
+local function cmd_timer(ctx, words)
+    local sub = words[3] and words[3]:lower() or ""
+    local timers = E.cfg.timers
+    if sub == "add" then
+        local rest = table.concat(words, " ", 4)
+        local trigger
+        trigger, rest = take_arg(rest)
+        if not trigger then
+            say(ctx, 'usage: /autoreply timer add "<!cmd>" [smart|full] <reply with {time}>')
+            return
+        end
+        local fmt = "smart"
+        local maybe, after = take_arg(rest)
+        if maybe == "smart" or maybe == "full" then
+            fmt, rest = maybe, after
+        end
+        local chan = util.norm_channel(ctx.channel:get_name())
+        local id, err = E.add_timer(trigger, chan, rest, fmt)
+        if not id then
+            say(ctx, "cannot add timer: " .. err)
+            return
+        end
+        say(ctx, string.format("added timer #%d (%s) in %s, counting from now -> %s", id, trigger, chan, rest))
+        if not util.contains(E.cfg.channels, chan) then
+            say(ctx, "note: " .. chan .. " is not in the channel list; add it with /autoreply channel add " .. chan)
+        end
+        return
+    elseif sub == "list" then
+        if #timers == 0 then
+            say(ctx, "no timers yet. Add one with /autoreply timer add ...")
+            return
+        end
+        for _, t in ipairs(timers) do
+            local state = "stopped"
+            if t.enabled and t.started_at then
+                state = util.format_elapsed(E.timer_elapsed(t), t.format)
+            end
+            say(ctx, string.format("#%d [%s @%s, %s, category: %s] %s -> %s", t.id, t.trigger, t.channel,
+                t.format, t.on_category, state, t.reply))
+        end
+        return
+    end
+    local id = tonumber(words[4])
+    local t, idx
+    if id then t, idx = E.find_timer(id) end
+    if not t then
+        say(ctx, "usage: /autoreply timer add|list|on|off|reset|remove|format|category ...  (id from timer list)")
+        return
+    end
+    if sub == "on" then
+        E.set_timer_enabled(t, true)
+        say(ctx, string.format("timer #%d started from 0.", id))
+    elseif sub == "off" then
+        E.set_timer_enabled(t, false)
+        say(ctx, string.format("timer #%d stopped.", id))
+    elseif sub == "reset" then
+        E.reset_timer(t)
+        say(ctx, string.format("timer #%d restarted from 0.", id))
+    elseif sub == "remove" then
+        table.remove(timers, idx)
+        E.save()
+        say(ctx, string.format("timer #%d removed.", id))
+    elseif sub == "format" and (words[5] == "smart" or words[5] == "full") then
+        t.format = words[5]
+        E.save()
+        say(ctx, string.format("timer #%d format: %s.", id, t.format))
+    elseif sub == "category" and (words[5] == "reset" or words[5] == "stop" or words[5] == "off") then
+        t.on_category = words[5]
+        E.save()
+        say(ctx, string.format("timer #%d on category change: %s.", id, t.on_category))
+    else
+        say(ctx, "usage: /autoreply timer format <id> smart|full  |  category <id> reset|stop|off")
+    end
+end
+
 function M.handle(ctx)
     E.notice_channel = ctx.channel
     local words = ctx.words
@@ -295,6 +381,8 @@ function M.handle(ctx)
         cmd_list(ctx)
     elseif sub == "remove" or sub == "enable" or sub == "disable" then
         cmd_rule_op(ctx, words, sub)
+    elseif sub == "timer" or sub == "timers" then
+        cmd_timer(ctx, words)
     elseif sub == "ignore" then
         cmd_ignore(ctx, words)
     elseif sub == "set" then

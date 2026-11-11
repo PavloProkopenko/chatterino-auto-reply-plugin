@@ -26,6 +26,8 @@ local last_sent_text = {}
 local dup_flip = {}
 local warned_anon = false
 local expiry_armed = false
+local timer_offline = {} -- timer id -> unix s since which the stream looked offline
+local OFFLINE_GRACE_S = 120
 
 -- ---------- notices ----------
 function E.notify(text, channel)
@@ -175,6 +177,138 @@ function E.find_rule(id)
     end
 end
 
+-- ---------- time counters ----------
+function E.find_timer(id)
+    for i, t in ipairs(E.cfg.timers) do
+        if t.id == id then
+            return t, i
+        end
+    end
+end
+
+-- Cached stream status of a timer's channel, or nil when unknown.
+local function stream_status(t)
+    local h = handles[t.channel]
+    if not h then
+        return nil
+    end
+    local ok, st = pcall(function()
+        if not h.channel:is_valid() then
+            return nil
+        end
+        return h.channel:get_stream_status()
+    end)
+    if ok and type(st) == "table" then
+        return st
+    end
+    return nil
+end
+
+local function start_counting(t)
+    t.enabled = true
+    t.started_at = util.now_s()
+    timer_offline[t.id] = nil
+    local st = stream_status(t)
+    t.game_id = (st and st.live and st.game_id ~= "" and st.game_id) or nil
+end
+
+function E.add_timer(trigger, channel, reply, format)
+    if not trigger or trigger == "" then
+        return nil, "a trigger word is required"
+    end
+    if type(reply) ~= "string" or not reply:match("%S") then
+        return nil, "a reply message is required"
+    end
+    if not reply:find("{time}", 1, true) then
+        return nil, "reply must contain {time}"
+    end
+    if #reply > 500 then
+        return nil, "reply is longer than 500 characters"
+    end
+    local first = reply:sub(1, 1)
+    if first == "/" or first == "." then
+        return nil, "reply must not start with '/' or '.' (would run as a command)"
+    end
+    local cfg = E.cfg
+    local t = {
+        id = cfg.next_timer_id, trigger = trigger, channel = channel,
+        reply = reply, format = format or "smart", on_category = "reset",
+    }
+    cfg.next_timer_id = t.id + 1
+    start_counting(t)
+    cfg.timers[#cfg.timers + 1] = t
+    E.save()
+    return t.id
+end
+
+function E.set_timer_enabled(t, on)
+    if on then
+        start_counting(t)
+    else
+        t.enabled = false
+        t.started_at = nil
+        t.game_id = nil
+        timer_offline[t.id] = nil
+    end
+    E.save()
+end
+
+function E.reset_timer(t)
+    start_counting(t)
+    E.save()
+end
+
+function E.timer_elapsed(t)
+    if not t.started_at then
+        return nil
+    end
+    return math.max(0, util.now_s() - t.started_at)
+end
+
+-- Guards, called from the poll tick: stop on offline, react to category change.
+function E.check_timers()
+    local now = util.now_s()
+    local dirty = false
+    for _, t in ipairs(E.cfg.timers) do
+        local st = (t.enabled and t.started_at) and stream_status(t) or nil
+        if st then
+            if st.live then
+                timer_offline[t.id] = nil
+                local gid = st.game_id or ""
+                if gid ~= "" then
+                    if not t.game_id or t.game_id == "" then
+                        t.game_id = gid
+                        dirty = true
+                    elseif gid ~= t.game_id and t.on_category ~= "off" then
+                        local game = (st.game_name and st.game_name ~= "") and st.game_name or gid
+                        if t.on_category == "stop" then
+                            E.set_timer_enabled(t, false)
+                            E.notify(string.format("timer #%d (%s) stopped: category changed to %s.",
+                                t.id, t.trigger, game), nil)
+                        else
+                            t.started_at = now
+                            t.game_id = gid
+                            dirty = true
+                            E.notify(string.format("timer #%d (%s) restarted: category changed to %s.",
+                                t.id, t.trigger, game), nil)
+                        end
+                    end
+                end
+            else
+                local since = timer_offline[t.id] or now
+                timer_offline[t.id] = since
+                if now - since >= OFFLINE_GRACE_S then
+                    E.set_timer_enabled(t, false)
+                    E.notify(string.format("timer #%d (%s) stopped: stream went offline.", t.id, t.trigger))
+                end
+            end
+        end
+    end
+    if dirty then
+        E.save()
+    end
+end
+
 -- ---------- channel hooks ----------
 function E.sync_hooks()
     local wanted = {}
@@ -220,6 +354,7 @@ end
 function E.start_poll()
     local function tick()
         E.sync_hooks()
+        pcall(E.check_timers)
         c2.later(tick, POLL_MS)
     end
     c2.later(tick, POLL_MS)
@@ -273,12 +408,15 @@ function E.pump()
 end
 
 -- {user} in the reply becomes the sender's name.
-local function render(reply, msg)
+local function render(reply, msg, time_text)
     local name = msg.display_name
     if not name or name == "" then
         name = msg.login_name
     end
     local out = reply:gsub("{user}", function() return name end)
+    if time_text then
+        out = out:gsub("{time}", function() return time_text end)
+    end
     return out:sub(1, 500)
 end
 
@@ -342,6 +480,22 @@ function E.on_message(chan_name, ch, msg)
     local last_user = user_cd[ukey]
     if last_user and now - last_user < E.cfg.per_user_cooldown then
         return
+    end
+
+    -- time counters (explicit commands) take priority over rules
+    for _, t in ipairs(E.cfg.timers) do
+        if t.enabled and t.started_at and t.channel == chan_name
+            and rules.matches_one({ type = "word", match = t.trigger }, text, flags, me)
+        then
+            local rkey = chan_name .. "|t" .. tostring(t.id)
+            local last_rule = rule_cd[rkey]
+            if not (last_rule and now - last_rule < E.cfg.per_rule_cooldown) then
+                user_cd[ukey] = now
+                rule_cd[rkey] = now
+                enqueue(chan_name, render(t.reply, msg, util.format_elapsed(E.timer_elapsed(t), t.format)))
+            end
+            return
+        end
     end
 
     for _, rule in ipairs(E.cfg.rules) do
