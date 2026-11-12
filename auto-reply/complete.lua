@@ -1,0 +1,145 @@
+-- Tab-completion for /autoreply (and /ar): context-aware, real values only.
+local E = require("engine")
+local rules = require("rules")
+local commands = require("commands")
+
+local C = {}
+
+local SUBCOMMANDS = {
+    "on", "off", "toggle", "status", "channel", "add", "new", "list", "test", "remove",
+    "enable", "disable", "timer", "ignore", "redeem", "protect", "set", "reload", "help",
+    "cancel", "back",
+}
+local DURATIONS = { "30m", "2h", "1d", "forever" }
+local ON_OFF = { "on", "off" }
+
+local function ids_of(list)
+    local out = {}
+    for _, item in ipairs(list) do
+        out[#out + 1] = tostring(item.id)
+    end
+    return out
+end
+
+local function help_topics()
+    local out = {}
+    for _, t in ipairs(commands.TOPICS) do
+        out[#out + 1] = t.key
+    end
+    out[#out + 1] = "all"
+    return out
+end
+
+-- args: completed words after the command name, lowercased. Returns candidate list or nil.
+local function candidates(args)
+    local n = #args
+    if n == 0 then
+        return SUBCOMMANDS
+    end
+    local sub = args[1]
+    local prev = args[n]
+    local prev2 = args[n - 1]
+    local cfg = E.cfg
+    if sub == "help" then
+        if n == 1 then return help_topics() end
+        if n == 2 and (prev == "add" or prev == "rule") then return rules.TYPES end
+    elseif sub == "on" then
+        if n == 1 then return DURATIONS end
+    elseif sub == "channel" or sub == "channels" then
+        if n == 1 then return { "add", "remove", "list" } end
+        if n == 2 and prev == "remove" then return cfg.channels end
+    elseif sub == "add" then
+        if prev == "add" or prev == "+" then
+            return rules.TYPES
+        end
+        if prev == "flag" and (prev2 == "add" or prev2 == "+") then
+            return rules.FLAG_ORDER
+        end
+    elseif sub == "remove" or sub == "enable" or sub == "disable" then
+        if n == 1 then return ids_of(cfg.rules) end
+    elseif sub == "test" then
+        if n == 1 then
+            local out = ids_of(cfg.rules)
+            out[#out + 1] = "all"
+            return out
+        end
+    elseif sub == "timer" or sub == "timers" then
+        if n == 1 then return { "add", "list", "on", "off", "reset", "set", "remove", "format", "category" } end
+        if n == 2 and prev ~= "add" and prev ~= "list" then return ids_of(cfg.timers) end
+        if n == 3 and args[2] == "format" then return { "smart", "full" } end
+        if n == 3 and args[2] == "category" then return { "reset", "stop", "off" } end
+    elseif sub == "ignore" then
+        if n == 1 then return { "add", "remove", "list" } end
+        if n == 2 and prev == "remove" then return cfg.ignore_users end
+    elseif sub == "protect" then
+        if n == 1 then return { "add", "remove", "list" } end
+        if n == 2 and prev == "remove" then return cfg.protect_users end
+    elseif sub == "redeem" or sub == "mute" then
+        if n == 1 then return { "add", "list", "remove", "enable", "disable", "debug" } end
+        if n == 2 and prev == "add" then return { "timeout", "untimeout" } end
+        if n == 2 and (prev == "remove" or prev == "enable" or prev == "disable") then
+            return ids_of(cfg.redeems)
+        end
+        if n == 2 and prev == "debug" then return ON_OFF end
+    elseif sub == "set" then
+        if n == 1 then return { "usercd", "rulecd", "gap", "live", "mutelurkers", "backfire" } end
+        if n == 2 and (prev == "live" or prev == "mutelurkers" or prev == "backfire") then
+            return ON_OFF
+        end
+    end
+    return nil
+end
+
+-- Pure part, testable without Chatterino: text before the cursor -> values or nil.
+function C.complete(text)
+    local lead = text:match("^%s*(%S+)")
+    if not lead then return nil end
+    lead = lead:lower()
+    if lead ~= "/autoreply" and lead ~= "/ar" then return nil end
+    local words = {}
+    for w in text:gmatch("%S+") do
+        words[#words + 1] = w
+    end
+    local current = ""
+    if not text:match("%s$") then
+        current = table.remove(words) or ""
+    end
+    if #words == 0 then
+        return nil -- still typing the command name itself
+    end
+    local args = {}
+    for i = 2, #words do
+        args[#args + 1] = words[i]:lower()
+    end
+    local list = candidates(args)
+    if not list then return nil end
+    local want = current:lower()
+    local out = {}
+    for _, v in ipairs(list) do
+        if want == "" or v:lower():sub(1, #want) == want then
+            out[#out + 1] = v
+        end
+    end
+    return out
+end
+
+function C.handler(event)
+    local empty = { values = {}, hide_others = false }
+    local ok, res = pcall(function()
+        local text = event.full_text_content or ""
+        local pos = event.cursor_position
+        if type(pos) == "number" then
+            local byte = utf8.offset(text, pos + 1)
+            if byte then
+                text = text:sub(1, byte - 1)
+            end
+        end
+        return C.complete(text)
+    end)
+    if not ok or not res or #res == 0 then
+        return empty
+    end
+    return { values = res, hide_others = true }
+end
+
+return C

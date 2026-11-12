@@ -13,6 +13,51 @@ M.FLAGS = {
     cheer = "CheerMessage",
 }
 
+-- display order of flag names (completion, wizard, errors)
+M.FLAG_ORDER = { "first", "highlighted", "reply", "announcement", "sub", "cheer" }
+M.FLAG_INFO = {
+    first = "первое сообщение зрителя",
+    highlighted = "выделенное сообщение",
+    reply = "ответ на сообщение",
+    announcement = "объявление",
+    sub = "подписка",
+    cheer = "биты",
+}
+
+-- Plain-language description of each condition type (help, wizard).
+M.TYPE_INFO = {
+    keyword = {
+        what = "подстрока: текст ищется где угодно, даже внутри слова («при» сработает на «привет» и «спринт»); удобно для команд вроде !discord",
+        syntax = '/autoreply add keyword "<текст>" <ответ>',
+        example = "/autoreply add keyword !discord Наш дискорд: discord.gg/xxxx",
+    },
+    word = {
+        what = "отдельное слово или фраза целиком: «привет» сработает на «Привет!», но не на «приветствую» (регистр не важен)",
+        syntax = '/autoreply add word "<слово или фраза>" <ответ>',
+        example = "/autoreply add word привет Привет, {user}!",
+    },
+    anyword = {
+        what = "любое из нескольких слов (варианты через |), каждое как отдельное слово",
+        syntax = '/autoreply add anyword "<слово1|слово2|слово3>" <ответ>',
+        example = '/autoreply add anyword "qq|привет|hi" @{user} qq',
+    },
+    mention = {
+        what = "сообщение упоминает вас (@ваш_ник или просто ник)",
+        syntax = "/autoreply add mention <ответ>",
+        example = "/autoreply add mention Слушаю, {user}!",
+    },
+    flag = {
+        what = "свойство сообщения: first = первое сообщение зрителя, highlighted = выделенное, reply = ответ на сообщение, announcement = объявление, sub = подписка, cheer = биты",
+        syntax = "/autoreply add flag first|highlighted|reply|announcement|sub|cheer <ответ>",
+        example = "/autoreply add flag first Добро пожаловать, {user}!",
+    },
+    pattern = {
+        what = "шаблон Lua для опытных (это НЕ regex); если не уверены, берите keyword или word",
+        syntax = '/autoreply add pattern "<шаблон Lua>" <ответ>',
+        example = '/autoreply add pattern "^!hello%s*$" Привет!',
+    },
+}
+
 -- Unicode-aware lowercase (Lua's string.lower only handles ASCII).
 local function lower_cp(cp)
     if cp >= 0x41 and cp <= 0x5A then return cp + 32 end
@@ -82,33 +127,62 @@ end
 function M.validate(rtype, match)
     if rtype == "keyword" or rtype == "word" then
         if not match or match == "" then
-            return false, "needs a non-empty text to match"
+            return false, "нужен непустой текст для поиска"
         end
     elseif rtype == "anyword" then
         if not match or #split_alternatives(match) == 0 then
-            return false, 'needs words separated by |, e.g. "qq|hi|привет"'
+            return false, 'нужны слова через |, например "qq|hi|привет"'
         end
     elseif rtype == "mention" then
         return true
     elseif rtype == "flag" then
         if not M.FLAGS[match or ""] then
-            local names = {}
-            for k in pairs(M.FLAGS) do names[#names + 1] = k end
-            table.sort(names)
-            return false, "flag must be one of: " .. table.concat(names, ", ")
+            return false, "флаг должен быть одним из: " .. table.concat(M.FLAG_ORDER, ", ")
         end
     elseif rtype == "pattern" then
         if not match or match == "" then
-            return false, "needs a Lua pattern"
+            return false, "нужен шаблон Lua"
         end
         local ok, err = pcall(string.find, "", match)
         if not ok then
-            return false, "invalid Lua pattern: " .. tostring(err)
+            return false, "некорректный шаблон Lua: " .. tostring(err)
         end
     else
-        return false, "unknown type '" .. tostring(rtype) .. "' (use: " .. table.concat(M.TYPES, ", ") .. ")"
+        return false, "неизвестный тип «" .. tostring(rtype) .. "» (доступны: " .. table.concat(M.TYPES, ", ") .. ")"
     end
     return true
+end
+
+-- Builds a flags bitmask from friendly names. Returns mask, unknown_names.
+function M.flags_from_names(names)
+    local mask, unknown = 0, {}
+    for _, n in ipairs(names) do
+        local key = M.FLAGS[n]
+        local bit = key and c2.MessageFlag[key]
+        if bit then
+            mask = mask | bit
+        else
+            unknown[#unknown + 1] = n
+        end
+    end
+    return mask, unknown
+end
+
+-- Example message (and flag names) that should trigger the given conditions.
+function M.sample(conditions, me)
+    local parts, flags = {}, {}
+    for _, c in ipairs(conditions) do
+        if c.type == "keyword" or c.type == "word" then
+            parts[#parts + 1] = c.match
+        elseif c.type == "anyword" then
+            parts[#parts + 1] = split_alternatives(c.match)[1] or ""
+        elseif c.type == "mention" then
+            parts[#parts + 1] = "@" .. ((me and me ~= "") and me or "ваш_ник")
+        elseif c.type == "flag" then
+            flags[#flags + 1] = c.match
+        end
+    end
+    return table.concat(parts, " "), flags
 end
 
 -- A rule can only fire if it has a non-empty reply (hard requirement).

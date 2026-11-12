@@ -76,7 +76,7 @@ function E.is_active()
         return false
     end
     if E.expires and util.now_s() >= E.expires then
-        E.deactivate("time is up, auto-reply turned off.")
+        E.deactivate("время вышло, авто-ответ выключен.")
         return false
     end
     return true
@@ -149,10 +149,25 @@ function E.load()
 end
 
 -- ---------- rules ----------
+-- Validates reply text shared by rules and timers. Returns ok, err.
+function E.check_reply(reply)
+    if type(reply) ~= "string" or not reply:match("%S") then
+        return false, "нужен текст ответа"
+    end
+    if #reply > 500 then
+        return false, "ответ длиннее 500 символов"
+    end
+    local first = reply:sub(1, 1)
+    if first == "/" or first == "." then
+        return false, "ответ не должен начинаться с «/» или «.» (это выполнилось бы как команда)"
+    end
+    return true
+end
+
 -- conditions: list of {type=, match=}; ALL must match for the rule to fire.
 function E.add_rule(conditions, reply, channels)
     if type(conditions) ~= "table" or #conditions == 0 then
-        return nil, "a rule needs at least one condition"
+        return nil, "в правиле должно быть хотя бы одно условие"
     end
     for _, c in ipairs(conditions) do
         local ok, err = rules.validate(c.type, c.match)
@@ -160,15 +175,9 @@ function E.add_rule(conditions, reply, channels)
             return nil, c.type .. ": " .. err
         end
     end
-    if type(reply) ~= "string" or not reply:match("%S") then
-        return nil, "a reply message is required"
-    end
-    if #reply > 500 then
-        return nil, "reply is longer than 500 characters"
-    end
-    local first = reply:sub(1, 1)
-    if first == "/" or first == "." then
-        return nil, "reply must not start with '/' or '.' (would run as a command)"
+    local rok, rerr = E.check_reply(reply)
+    if not rok then
+        return nil, rerr
     end
     local cfg = E.cfg
     local id = cfg.next_rule_id
@@ -226,20 +235,14 @@ end
 
 function E.add_timer(trigger, channel, reply, format)
     if not trigger or trigger == "" then
-        return nil, "a trigger word is required"
+        return nil, "нужно слово-триггер"
     end
-    if type(reply) ~= "string" or not reply:match("%S") then
-        return nil, "a reply message is required"
+    local rok, rerr = E.check_reply(reply)
+    if not rok then
+        return nil, rerr
     end
     if not reply:find("{time}", 1, true) then
-        return nil, "reply must contain {time}"
-    end
-    if #reply > 500 then
-        return nil, "reply is longer than 500 characters"
-    end
-    local first = reply:sub(1, 1)
-    if first == "/" or first == "." then
-        return nil, "reply must not start with '/' or '.' (would run as a command)"
+        return nil, "в ответе должен быть {time}"
     end
     local cfg = E.cfg
     local t = {
@@ -295,13 +298,13 @@ function E.check_timers()
                         local game = (st.game_name and st.game_name ~= "") and st.game_name or gid
                         if t.on_category == "stop" then
                             E.set_timer_enabled(t, false)
-                            E.notify(string.format("timer #%d (%s) stopped: category changed to %s.",
+                            E.notify(string.format("счётчик #%d (%s) остановлен: категория сменилась на %s.",
                                 t.id, t.trigger, game), nil)
                         else
                             t.started_at = now
                             t.game_id = gid
                             dirty = true
-                            E.notify(string.format("timer #%d (%s) restarted: category changed to %s.",
+                            E.notify(string.format("счётчик #%d (%s) перезапущен: категория сменилась на %s.",
                                 t.id, t.trigger, game), nil)
                         end
                     end
@@ -311,7 +314,7 @@ function E.check_timers()
                 timer_offline[t.id] = since
                 if now - since >= OFFLINE_GRACE_S then
                     E.set_timer_enabled(t, false)
-                    E.notify(string.format("timer #%d (%s) stopped: stream went offline.", t.id, t.trigger))
+                    E.notify(string.format("счётчик #%d (%s) остановлен: стрим ушёл в офлайн.", t.id, t.trigger))
                 end
             end
         end
@@ -437,6 +440,8 @@ local function render(reply, msg, time_text)
     return out:sub(1, 500)
 end
 
+E.render = render -- also used by /autoreply test
+
 local function enqueue(channel, text, command)
     if #queue >= MAX_QUEUE then
         table.remove(queue, 1)
@@ -448,18 +453,18 @@ end
 -- ---------- channel-point rewards -> /timeout, /untimeout ----------
 function E.add_redeem(channel, action, title, seconds)
     if action ~= "timeout" and action ~= "untimeout" then
-        return nil, "action must be timeout or untimeout"
+        return nil, "действие должно быть timeout или untimeout"
     end
     if type(title) ~= "string" or not title:match("%S") then
-        return nil, "reward title is required"
+        return nil, "нужно название награды"
     end
     if action == "timeout" and (type(seconds) ~= "number" or seconds < 1 or seconds > 1209600) then
-        return nil, "duration must be between 1s and 14d"
+        return nil, "время мута должно быть от 1s до 14d"
     end
     local lt = rules.lower(title)
     for _, r in ipairs(E.cfg.redeems) do
         if r.channel == channel and rules.lower(r.title) == lt then
-            return nil, "this reward already has redeem #" .. r.id
+            return nil, "для этой награды уже есть правило #" .. r.id
         end
     end
     local cfg = E.cfg
@@ -636,7 +641,7 @@ function E.on_message(chan_name, ch, msg)
     if not acct or not acct:is_valid() or acct:is_anon() then
         if not warned_anon then
             warned_anon = true
-            E.notify("no logged-in account; auto-reply cannot send messages.", ch)
+            E.notify("нет аккаунта, в который выполнен вход: авто-ответ не сможет отправлять сообщения.", ch)
         end
         return
     end

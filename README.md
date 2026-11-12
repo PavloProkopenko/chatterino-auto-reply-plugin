@@ -11,7 +11,7 @@ A Lua plugin for [Leafyrino](https://github.com/leafyzito/leafyrino) (a Chatteri
 - Built-in safeguards: ignores your own messages and system messages, per-user and per-rule cooldowns, a minimum gap between replies, an optional "only while live" mode, and an ignore list for bots.
 - Replies can contain `{user}`, which becomes the name of the person who wrote the message.
 
-Chatterino plugins cannot add windows or settings pages, so everything is configured with the `/autoreply` chat command. Run `/autoreply help` for a short topic index, `/autoreply help <topic>` (e.g. `timer`, `add`) for one section, or `/autoreply help all` for everything; explanations are in Russian. Settings are stored in `data/config.json` inside the plugin folder.
+Chatterino plugins cannot add windows or settings pages, so everything is configured with the `/autoreply` chat command. Press Tab after `/autoreply` (or the short alias `/ar`) to see commands and options. Run `/autoreply new` for a step-by-step rule wizard, `/autoreply test <id> <message>` to check a rule without sending anything, `/autoreply help` for a short cheat-sheet, `/autoreply help <topic>` (e.g. `timer`, `add`) for one section, or `/autoreply help all` for everything; explanations are in Russian. Settings are stored in `data/config.json` inside the plugin folder.
 
 ## Use cases
 
