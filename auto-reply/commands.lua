@@ -83,6 +83,22 @@ local TOPICS = {
         },
     },
     {
+        key = "redeem", aliases = { "mute", "protect" },
+        summary = "авто-мут и авто-размут по наградам за баллы канала",
+        lines = {
+            "Авто-модерация по наградам: зритель покупает награду и пишет в поле ввода ник (или @ник), бот сам пишет /timeout или /untimeout. Нужны права модератора или стримера, награда должна требовать ввод текста. Название награды берётся из строки «Redeemed ...» в чате, достаточно части названия (регистр не важен); если в названии есть пробелы, берите его в кавычки. Время мута: 10m, 1h, 1d (до 14d). Правило привязано к текущему каналу.",
+            '/autoreply redeem add timeout "<название награды>" <время>',
+            "Награда для размута: бот пишет /untimeout на указанный ник.",
+            '/autoreply redeem add untimeout "<название награды>"',
+            "Управление: list = показать, remove = удалить, enable/disable = включить/выключить. debug on = показывать в чате, что именно видит плагин при покупке награды (для проверки, только до закрытия приложения).",
+            "/autoreply redeem list | remove <id> | enable <id> | disable <id> | debug on|off",
+            "Защита: этих пользователей мутить нельзя (владелец канала, ваш аккаунт, игнор-список, боты вроде Nightbot, модераторы, которых плагин увидел в чате по значку). Остальных (модераторов без сообщений, VIP) добавьте вручную. Если зритель выбрал защищённого, мут получает он сам (backfire); если и он защищён, ничего не происходит.",
+            "/autoreply protect add|remove|list <пользователь>",
+            "mutelurkers: off = мутить можно только тех, кто писал в чат за последние 2 часа (защита от опечаток), on = мутить можно любого. backfire: on = защищённый ник возвращает мут автору (по умолчанию), off = просто отказ.",
+            "/autoreply set mutelurkers on|off  |  /autoreply set backfire on|off",
+        },
+    },
+    {
         key = "reload", aliases = {},
         summary = "перечитать data/config.json",
         lines = {
@@ -164,7 +180,9 @@ local function status(ctx)
     for _, t in ipairs(cfg.timers) do
         if t.enabled and t.started_at then running = running + 1 end
     end
-    say(ctx, string.format("timers: %d (%d running)", #cfg.timers, running))
+    say(ctx, string.format("timers: %d (%d running) | redeems: %d | protected: %d | backfire: %s | mute lurkers: %s",
+        #cfg.timers, running, #cfg.redeems, #cfg.protect_users, cfg.backfire and "on" or "off",
+        cfg.mute_lurkers and "on" or "off"))
     say(ctx, string.format("rules: %d (%d active) | cooldowns user %ds, rule %ds, gap %ds | only when live: %s",
         #cfg.rules, usable, cfg.per_user_cooldown, cfg.per_rule_cooldown,
         cfg.global_min_gap, cfg.only_when_live and "yes" or "no"))
@@ -340,6 +358,97 @@ local function cmd_ignore(ctx, words)
     end
 end
 
+local function cmd_protect(ctx, words)
+    local sub, user = words[3], util.norm_user(words[4])
+    local list = E.cfg.protect_users
+    if sub == "list" then
+        say(ctx, "protected from mute: " .. (#list > 0 and table.concat(list, ", ") or "none"))
+    elseif sub == "add" and user ~= "" then
+        if not util.contains(list, user) then
+            list[#list + 1] = user
+            E.save()
+        end
+        say(ctx, user .. " is protected from reward mutes.")
+    elseif sub == "remove" and user ~= "" then
+        local i = util.contains(list, user)
+        if i then
+            table.remove(list, i)
+            E.save()
+        end
+        say(ctx, user .. " is no longer protected.")
+    else
+        say(ctx, "usage: /autoreply protect add|remove|list <user>")
+    end
+end
+
+local function describe_redeem(r)
+    return string.format("#%d [%s] \"%s\" -> %s%s%s", r.id, r.channel, r.title, r.action,
+        r.seconds and (" " .. util.format_duration(r.seconds)) or "", r.enabled == false and "  (disabled)" or "")
+end
+
+local function cmd_redeem(ctx, words)
+    local sub = words[3] and words[3]:lower() or ""
+    local list = E.cfg.redeems
+    if sub == "add" then
+        local ok, ismod = pcall(function() return ctx.channel:is_mod() or ctx.channel:is_broadcaster() end)
+        if not ok or not ismod then
+            say(ctx, "only a moderator or the broadcaster of this channel can set this up (and the channel must be a Twitch channel).")
+            return
+        end
+        local action = words[4] and words[4]:lower() or ""
+        local rest = table.concat(words, " ", 5)
+        local title
+        title, rest = take_arg(rest)
+        local secs
+        if action == "timeout" then
+            secs = util.parse_duration(rest and rest:match("^(%S+)"))
+        end
+        if (action ~= "timeout" and action ~= "untimeout") or not title or (action == "timeout" and not secs) then
+            say(ctx, 'usage: /autoreply redeem add timeout "<reward title>" <time, e.g. 10m>  |  redeem add untimeout "<reward title>"')
+            return
+        end
+        local chan = util.norm_channel(ctx.channel:get_name())
+        local id, err = E.add_redeem(chan, action, title, secs)
+        if not id then
+            say(ctx, "cannot add redeem: " .. err)
+            return
+        end
+        say(ctx, "added redeem " .. describe_redeem(E.find_redeem(id)))
+        if not util.contains(E.cfg.channels, chan) then
+            say(ctx, "note: " .. chan .. " is not in the channel list; add it with /autoreply channel add " .. chan)
+        end
+        say(ctx, "note: add your mods/VIPs with /autoreply protect add <user>; check what the plugin sees with /autoreply redeem debug on.")
+    elseif sub == "list" then
+        if #list == 0 then
+            say(ctx, 'no redeems yet. Add one with /autoreply redeem add timeout "<title>" 10m')
+            return
+        end
+        for _, r in ipairs(list) do
+            say(ctx, describe_redeem(r))
+        end
+    elseif sub == "debug" and (words[4] == "on" or words[4] == "off") then
+        E.debug_redeem = (words[4] == "on")
+        say(ctx, "redeem debug: " .. words[4] .. (E.debug_redeem and " (buy a reward to see what the plugin receives; resets when the app closes)." or "."))
+    elseif sub == "remove" or sub == "enable" or sub == "disable" then
+        local id = tonumber(words[4])
+        local r, idx
+        if id then r, idx = E.find_redeem(id) end
+        if not r then
+            say(ctx, "no redeem with that id; see /autoreply redeem list.")
+            return
+        end
+        if sub == "remove" then
+            table.remove(list, idx)
+        else
+            r.enabled = (sub == "enable")
+        end
+        E.save()
+        say(ctx, string.format("redeem #%d %sd.", id, sub == "remove" and "remove" or sub))
+    else
+        say(ctx, "usage: /autoreply redeem add|list|remove|enable|disable|debug ...")
+    end
+end
+
 local function cmd_set(ctx, words)
     local key, val = words[3], words[4]
     local keys = { usercd = "per_user_cooldown", rulecd = "per_rule_cooldown", gap = "global_min_gap" }
@@ -356,12 +465,16 @@ local function cmd_set(ctx, words)
         E.cfg[keys[key]] = n
         E.save()
         say(ctx, key .. " = " .. n .. "s")
+    elseif (key == "mutelurkers" or key == "backfire") and (val == "on" or val == "off") then
+        E.cfg[key == "mutelurkers" and "mute_lurkers" or "backfire"] = (val == "on")
+        E.save()
+        say(ctx, key .. ": " .. val)
     elseif key == "live" and (val == "on" or val == "off") then
         E.cfg.only_when_live = (val == "on")
         E.save()
         say(ctx, "only reply while live: " .. val)
     else
-        say(ctx, "usage: /autoreply set usercd|rulecd|gap <seconds>  |  set live on|off")
+        say(ctx, "usage: /autoreply set usercd|rulecd|gap <seconds>  |  set live|mutelurkers|backfire on|off")
     end
 end
 
@@ -486,6 +599,10 @@ function M.handle(ctx)
         cmd_timer(ctx, words)
     elseif sub == "ignore" then
         cmd_ignore(ctx, words)
+    elseif sub == "redeem" or sub == "mute" then
+        cmd_redeem(ctx, words)
+    elseif sub == "protect" then
+        cmd_protect(ctx, words)
     elseif sub == "set" then
         cmd_set(ctx, words)
     elseif sub == "reload" then

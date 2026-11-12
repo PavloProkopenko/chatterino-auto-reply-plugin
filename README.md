@@ -37,6 +37,12 @@ Chatterino plugins cannot add windows or settings pages, so everything is config
   /autoreply timer add "!game" @{user} он играет {time}
   /autoreply timer list
   ```
+- **Mute by channel points.** On a moderator or broadcaster account, a text-input reward ("type the nick") can time out or unmute the typed user automatically. If the viewer targets a protected user (owner, mods, bots), the mute goes to the viewer instead:
+  ```
+  /autoreply redeem add timeout "Мут чудили" 10m
+  /autoreply redeem add untimeout "Анмут чудилы"
+  /autoreply protect add some_vip
+  ```
 
 Handy commands: `/autoreply status`, `/autoreply list`, `/autoreply off`.
 

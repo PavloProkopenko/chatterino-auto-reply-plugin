@@ -187,4 +187,89 @@ function M.matches_one(rule, text, flags, me)
     return false
 end
 
+-- Text of the reward line Chatterino draws for a redemption ("Redeemed <title> <cost>"),
+-- read from elements flagged ChannelPointReward. nil when Chatterino doesn't know the reward.
+function M.reward_title(msg)
+    local bit = c2.MessageElementFlag and c2.MessageElementFlag.ChannelPointReward or 0
+    if bit == 0 then
+        return nil
+    end
+    local ok, res = pcall(function()
+        local parts = {}
+        for _, el in ipairs(msg:elements()) do
+            if (el.flags & bit) ~= 0 and type(el.words) == "table" then
+                parts[#parts + 1] = table.concat(el.words, " ")
+            end
+        end
+        return table.concat(parts, " ")
+    end)
+    if ok and res ~= "" then
+        return res
+    end
+    return nil
+end
+
+-- True when the message carries a moderator badge element.
+function M.has_mod_badge(msg)
+    local ok, res = pcall(function()
+        for _, el in ipairs(msg:elements()) do
+            if el.type == "mod-badge" then
+                return true
+            end
+            if type(el.type) == "string" and el.type:find("badge", 1, true)
+                and type(el.tooltip) == "string" and el.tooltip:lower():find("moderator", 1, true) then
+                return true
+            end
+        end
+        return false
+    end)
+    return ok and res
+end
+
+-- Extracts the target login from a redemption's input.
+-- Accepts "nick", "@nick", or the merged "Redeemed <title> <cost> <input>" form.
+-- Returns login, or nil + reason. Strict: ambiguous input is refused.
+function M.parse_target(text)
+    local tokens = {}
+    for tok in tostring(text or ""):gmatch("%S+") do
+        tokens[#tokens + 1] = tok
+    end
+    if tokens[1] and tokens[1]:lower() == "redeemed" then
+        local cost
+        for i = 2, #tokens do
+            if tokens[i]:match("^%d+$") then
+                cost = i
+                break
+            end
+        end
+        if not cost then
+            return nil, "не нашёл ник в сообщении награды"
+        end
+        tokens = { table.unpack(tokens, cost + 1) }
+    end
+    if #tokens == 0 then
+        return nil, "ник не указан"
+    end
+    local pick
+    for _, t in ipairs(tokens) do
+        if t:sub(1, 1) == "@" then
+            pick = t
+            break
+        end
+    end
+    if not pick then
+        if #tokens > 1 then
+            return nil, "неясно, кого выбрать (укажите один ник или @ник)"
+        end
+        pick = tokens[1]
+    end
+    local login = pick:gsub("^@", "")
+    login = login:gsub("[,%.!%?:;]+$", "")
+    login = login:lower()
+    if not login:match("^[a-z0-9_]+$") or #login < 3 or #login > 25 then
+        return nil, "«" .. pick .. "» не похоже на ник Twitch"
+    end
+    return login
+end
+
 return M

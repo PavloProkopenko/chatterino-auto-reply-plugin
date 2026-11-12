@@ -28,6 +28,18 @@ local warned_anon = false
 local expiry_armed = false
 local timer_offline = {} -- timer id -> unix s since which the stream looked offline
 local OFFLINE_GRACE_S = 120
+local SEEN_WINDOW_S = 7200 -- a mute target must have chatted within this time
+local seen = {} -- "chan|login" -> unix seconds of last message
+local seen_count = 0
+local mods = {} -- "chan|login" -> true when seen with a moderator badge
+local done_ids = {} -- redemption message ids already handled
+local done_count = 0
+local warned_mod = {}
+local DEFAULT_BOTS = {
+    nightbot = true, streamelements = true, streamlabs = true,
+    moobot = true, fossabot = true, wizebot = true,
+}
+E.debug_redeem = false -- session-only: print what the plugin sees on redemptions
 
 -- ---------- notices ----------
 function E.notify(text, channel)
@@ -390,16 +402,21 @@ function E.pump()
     local ch = c2.Channel.by_name(item.channel)
     if ch and ch:is_valid() then
         local text = item.text
-        if last_sent_text[item.channel] == text then
-            dup_flip[item.channel] = not dup_flip[item.channel]
+        if item.command then
+            -- moderation command built internally from a validated login: executed as a command
+            ch:send_message(text, true)
         else
-            dup_flip[item.channel] = false
+            if last_sent_text[item.channel] == text then
+                dup_flip[item.channel] = not dup_flip[item.channel]
+            else
+                dup_flip[item.channel] = false
+            end
+            last_sent_text[item.channel] = text
+            if dup_flip[item.channel] then
+                text = text .. INVISIBLE
+            end
+            ch:send_message(text, false) -- false: never run as a command
         end
-        last_sent_text[item.channel] = text
-        if dup_flip[item.channel] then
-            text = text .. INVISIBLE
-        end
-        ch:send_message(text, false) -- false: never run as a command
         last_send_ms = util.now_ms()
     end
     if #queue > 0 then
@@ -420,12 +437,179 @@ local function render(reply, msg, time_text)
     return out:sub(1, 500)
 end
 
-local function enqueue(channel, text)
+local function enqueue(channel, text, command)
     if #queue >= MAX_QUEUE then
         table.remove(queue, 1)
     end
-    queue[#queue + 1] = { channel = channel, text = text }
+    queue[#queue + 1] = { channel = channel, text = text, command = command }
     schedule_pump(FIRST_DELAY_MS)
+end
+
+-- ---------- channel-point rewards -> /timeout, /untimeout ----------
+function E.add_redeem(channel, action, title, seconds)
+    if action ~= "timeout" and action ~= "untimeout" then
+        return nil, "action must be timeout or untimeout"
+    end
+    if type(title) ~= "string" or not title:match("%S") then
+        return nil, "reward title is required"
+    end
+    if action == "timeout" and (type(seconds) ~= "number" or seconds < 1 or seconds > 1209600) then
+        return nil, "duration must be between 1s and 14d"
+    end
+    local lt = rules.lower(title)
+    for _, r in ipairs(E.cfg.redeems) do
+        if r.channel == channel and rules.lower(r.title) == lt then
+            return nil, "this reward already has redeem #" .. r.id
+        end
+    end
+    local cfg = E.cfg
+    local r = {
+        id = cfg.next_redeem_id, channel = channel, title = title, action = action,
+        seconds = action == "timeout" and seconds or nil, enabled = true,
+    }
+    cfg.next_redeem_id = r.id + 1
+    cfg.redeems[#cfg.redeems + 1] = r
+    E.save()
+    return r.id
+end
+
+function E.find_redeem(id)
+    for i, r in ipairs(E.cfg.redeems) do
+        if r.id == id then
+            return r, i
+        end
+    end
+end
+
+local function has_redeems(chan_name)
+    for _, r in ipairs(E.cfg.redeems) do
+        if r.channel == chan_name then
+            return true
+        end
+    end
+    return false
+end
+
+-- Remembers who chatted recently and who wears a moderator badge.
+local function note_user(chan_name, msg, login)
+    if login == "" or not has_redeems(chan_name) then
+        return
+    end
+    local now = util.now_s()
+    if seen_count > 3000 then
+        seen_count = 0
+        for k, t in pairs(seen) do
+            if now - t > SEEN_WINDOW_S then
+                seen[k] = nil
+            else
+                seen_count = seen_count + 1
+            end
+        end
+    end
+    local key = chan_name .. "|" .. login
+    if not seen[key] then
+        seen_count = seen_count + 1
+    end
+    seen[key] = now
+    if not mods[key] and rules.has_mod_badge(msg) then
+        mods[key] = true
+    end
+end
+
+local function is_protected(chan_name, login, me)
+    return login == chan_name or login == me
+        or util.contains(E.cfg.protect_users, login) ~= nil
+        or util.contains(E.cfg.ignore_users, login) ~= nil
+        or DEFAULT_BOTS[login] == true
+        or mods[chan_name .. "|" .. login] == true
+end
+
+local function debug_dump(ch, msg, flags, title)
+    local parts = {}
+    pcall(function()
+        for _, el in ipairs(msg:elements()) do
+            local w = ""
+            if type(el.words) == "table" then w = " words=" .. table.concat(el.words, " ") end
+            parts[#parts + 1] = string.format("%s(flags=%s%s%s)", tostring(el.type), tostring(el.flags),
+                (type(el.tooltip) == "string" and el.tooltip ~= "") and (" tip=" .. el.tooltip) or "", w)
+        end
+    end)
+    E.notify(string.format("redeem debug: flags=%s text=[%s] title=[%s] id=%s", tostring(flags),
+        tostring(msg.message_text), tostring(title), tostring(msg.id)), ch)
+    E.notify("redeem debug elements: " .. table.concat(parts, "; "), ch)
+end
+
+-- Handles a redemption message. Returns true when it was consumed (matched a
+-- redeem rule), so normal rules must not run on it.
+local function handle_redeem(chan_name, ch, msg, text, me, sender, flags)
+    if not has_redeems(chan_name) then
+        return false
+    end
+    local title = rules.reward_title(msg)
+    if E.debug_redeem then
+        debug_dump(ch, msg, flags, title)
+    end
+    local hay = rules.lower(title or text)
+    local rule
+    for _, r in ipairs(E.cfg.redeems) do
+        if r.enabled ~= false and r.channel == chan_name and hay:find(rules.lower(r.title), 1, true) then
+            rule = r
+            break
+        end
+    end
+    if not rule then
+        return false
+    end
+    if msg.id and msg.id ~= "" then
+        if done_ids[msg.id] then
+            return true
+        end
+        if done_count > 500 then
+            done_ids, done_count = {}, 0
+        end
+        done_ids[msg.id] = true
+        done_count = done_count + 1
+    end
+    local okmod, ismod = pcall(function() return ch:is_mod() or ch:is_broadcaster() end)
+    if not okmod or not ismod then
+        if not warned_mod[chan_name] then
+            warned_mod[chan_name] = true
+            E.notify("в " .. chan_name .. " нет прав модератора, награды-модерация не работают.", ch)
+        end
+        return true
+    end
+    local target, err = rules.parse_target(text)
+    if not target then
+        E.notify(string.format("%s (%s): не выполнено: %s.", sender, rule.title, err), ch)
+        return true
+    end
+    if rule.action == "untimeout" then
+        enqueue(chan_name, "/untimeout " .. target, true)
+        E.notify(string.format("%s: размут %s.", sender, target), ch)
+        return true
+    end
+    local victim = target
+    if is_protected(chan_name, target, me) then
+        if not E.cfg.backfire then
+            E.notify(string.format("%s: мут %s не выполнен: пользователь защищён.", sender, target), ch)
+            return true
+        end
+        if is_protected(chan_name, sender, me) then
+            E.notify(string.format("%s: целился в защищённого %s, но сам тоже защищён; ничего не сделано.", sender, target), ch)
+            return true
+        end
+        victim = sender
+        E.notify(string.format("%s: целился в защищённого %s, мут получает он сам.", sender, target), ch)
+    elseif not E.cfg.mute_lurkers then
+        local t = seen[chan_name .. "|" .. target]
+        if not t or util.now_s() - t > SEEN_WINDOW_S then
+            E.notify(string.format("%s: мут %s не выполнен: его не было в чате за последние 2 часа (проверьте ник).", sender, target), ch)
+            return true
+        end
+    end
+    enqueue(chan_name, string.format("/timeout %s %d", victim, rule.seconds), true)
+    E.notify(string.format("%s: мут %s на %s.", sender, victim, util.format_duration(rule.seconds)), ch)
+    return true
 end
 
 -- ---------- incoming ----------
@@ -439,12 +623,13 @@ end
 local SKIP = nil
 
 function E.on_message(chan_name, ch, msg)
-    if not E.is_active() then
-        return
-    end
     SKIP = SKIP or skip_flags()
     local flags = msg.flags or 0
     if (flags & SKIP) ~= 0 then
+        return
+    end
+    note_user(chan_name, msg, util.norm_user(msg.login_name))
+    if not E.is_active() then
         return
     end
     local acct = c2.current_account()
@@ -465,6 +650,12 @@ function E.on_message(chan_name, ch, msg)
     end
     local text = msg.message_text or ""
     if text == "" then
+        return
+    end
+
+    local redeem_bit = c2.MessageFlag.RedeemedChannelPointReward or 0
+    if redeem_bit ~= 0 and (flags & redeem_bit) ~= 0
+        and handle_redeem(chan_name, ch, msg, text, me, sender, flags) then
         return
     end
 

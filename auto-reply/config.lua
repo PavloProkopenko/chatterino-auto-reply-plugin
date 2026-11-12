@@ -23,6 +23,13 @@ function M.defaults()
         -- enabled, started_at, game_id}
         next_timer_id = 1,
         timers = {},
+        -- channel-point rewards -> /timeout|/untimeout:
+        -- {id, channel, title, action = timeout|untimeout, seconds, enabled}
+        next_redeem_id = 1,
+        redeems = {},
+        protect_users = {}, -- never muted by a redeem (mods, bots, vips)
+        mute_lurkers = false, -- false: target must have chatted in the last 2h
+        backfire = true, -- protected target -> the redeemer gets the mute
     }
 end
 
@@ -68,6 +75,23 @@ function M.load()
     if type(cfg.rules) ~= "table" then cfg.rules = {} end
     if type(cfg.timers) ~= "table" then cfg.timers = {} end
     if type(cfg.next_timer_id) ~= "number" then cfg.next_timer_id = 1 end
+    if type(cfg.protect_users) ~= "table" then cfg.protect_users = {} end
+    if type(cfg.next_redeem_id) ~= "number" then cfg.next_redeem_id = 1 end
+    if type(cfg.mute_lurkers) ~= "boolean" then cfg.mute_lurkers = false end
+    if type(cfg.backfire) ~= "boolean" then cfg.backfire = true end
+    if type(cfg.redeems) ~= "table" then cfg.redeems = {} end
+    local goodr = {}
+    for _, r in ipairs(cfg.redeems) do
+        if type(r) == "table" and type(r.id) == "number" and type(r.channel) == "string"
+            and type(r.title) == "string" and r.title ~= ""
+            and (r.action == "timeout" or r.action == "untimeout") then
+            if r.action == "timeout" and not (type(r.seconds) == "number" and r.seconds >= 1 and r.seconds <= 1209600) then
+                r = nil
+            end
+            if r then goodr[#goodr + 1] = r end
+        end
+    end
+    cfg.redeems = goodr
     local good = {}
     for _, t in ipairs(cfg.timers) do
         if type(t) == "table" and type(t.trigger) == "string" and type(t.channel) == "string"
