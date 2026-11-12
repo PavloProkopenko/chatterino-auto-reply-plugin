@@ -87,6 +87,10 @@ function U.after_add(ctx, id, conds)
     end
     local fl = #flags > 0 and ("flags=" .. table.concat(flags, ",") .. " ") or ""
     U.say(ctx, string.format("проверить без отправки: /autoreply test %d %s%s", id, fl, text))
+    local rule = E.find_rule(id)
+    if rule and not rule.name then
+        U.say(ctx, string.format("дать правилу имя: /autoreply rename rule %d <имя> (или сразу при создании: add name=<имя> ...)", id))
+    end
 end
 
 return U

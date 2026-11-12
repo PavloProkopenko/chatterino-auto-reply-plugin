@@ -8,8 +8,19 @@ local C = {}
 local SUBCOMMANDS = {
     "on", "off", "toggle", "status", "channel", "add", "new", "list", "test", "remove",
     "enable", "disable", "timer", "ignore", "redeem", "protect", "set", "reload", "help",
-    "cancel", "back",
+    "cancel", "back", "rule", "rename",
 }
+local TIMER_VERBS = { "add", "list", "on", "off", "reset", "set", "remove", "format", "category" }
+local REDEEM_VERBS = { "add", "list", "remove", "enable", "disable", "debug" }
+local RULE_VERBS = { "enable", "disable", "remove", "test" }
+local RENAME_KINDS = { "rule", "timer", "redeem" }
+
+local function set_of(list)
+    local s = {}
+    for _, v in ipairs(list) do s[v] = true end
+    return s
+end
+local TIMER_VERB_SET, REDEEM_VERB_SET = set_of(TIMER_VERBS), set_of(REDEEM_VERBS)
 local DURATIONS = { "30m", "2h", "1d", "forever" }
 local ON_OFF = { "on", "off" }
 
@@ -20,6 +31,37 @@ local function ids_of(list)
     end
     return out
 end
+
+-- ids followed by names
+local function refs_of(list)
+    local out = ids_of(list)
+    for _, item in ipairs(list) do
+        if type(item.name) == "string" then
+            out[#out + 1] = item.name
+        end
+    end
+    return out
+end
+
+local function names_of(list)
+    local out = {}
+    for _, item in ipairs(list) do
+        if type(item.name) == "string" then
+            out[#out + 1] = item.name
+        end
+    end
+    return out
+end
+
+local function concat_lists(a, b)
+    local out = {}
+    for _, v in ipairs(a) do out[#out + 1] = v end
+    for _, v in ipairs(b) do out[#out + 1] = v end
+    return out
+end
+
+local KIND_LIST = { rule = "rules", rules = "rules", timer = "timers", timers = "timers",
+    redeem = "redeems", redeems = "redeems", mute = "redeems" }
 
 local function help_topics()
     local out = {}
@@ -56,18 +98,25 @@ local function candidates(args)
             return rules.FLAG_ORDER
         end
     elseif sub == "remove" or sub == "enable" or sub == "disable" then
-        if n == 1 then return ids_of(cfg.rules) end
+        if n == 1 then return refs_of(cfg.rules) end
     elseif sub == "test" then
         if n == 1 then
-            local out = ids_of(cfg.rules)
+            local out = refs_of(cfg.rules)
             out[#out + 1] = "all"
             return out
         end
+    elseif sub == "rule" then
+        if n == 1 then return refs_of(cfg.rules) end
+        if n == 2 then return RULE_VERBS end
+    elseif sub == "rename" then
+        if n == 1 then return RENAME_KINDS end
+        if n == 2 and KIND_LIST[prev] then return refs_of(cfg[KIND_LIST[prev]]) end
     elseif sub == "timer" or sub == "timers" then
-        if n == 1 then return { "add", "list", "on", "off", "reset", "set", "remove", "format", "category" } end
-        if n == 2 and prev ~= "add" and prev ~= "list" then return ids_of(cfg.timers) end
-        if n == 3 and args[2] == "format" then return { "smart", "full" } end
-        if n == 3 and args[2] == "category" then return { "reset", "stop", "off" } end
+        if n == 1 then return concat_lists(TIMER_VERBS, names_of(cfg.timers)) end
+        if n == 2 and not TIMER_VERB_SET[prev] then return TIMER_VERBS end -- name-first form
+        if n == 2 and prev ~= "add" and prev ~= "list" then return refs_of(cfg.timers) end
+        if n == 3 and (args[2] == "format" or prev == "format") then return { "smart", "full" } end
+        if n == 3 and (args[2] == "category" or prev == "category") then return { "reset", "stop", "off" } end
     elseif sub == "ignore" then
         if n == 1 then return { "add", "remove", "list" } end
         if n == 2 and prev == "remove" then return cfg.ignore_users end
@@ -75,10 +124,11 @@ local function candidates(args)
         if n == 1 then return { "add", "remove", "list" } end
         if n == 2 and prev == "remove" then return cfg.protect_users end
     elseif sub == "redeem" or sub == "mute" then
-        if n == 1 then return { "add", "list", "remove", "enable", "disable", "debug" } end
+        if n == 1 then return concat_lists(REDEEM_VERBS, names_of(cfg.redeems)) end
+        if n == 2 and not REDEEM_VERB_SET[prev] then return REDEEM_VERBS end -- name-first form
         if n == 2 and prev == "add" then return { "timeout", "untimeout" } end
         if n == 2 and (prev == "remove" or prev == "enable" or prev == "disable") then
-            return ids_of(cfg.redeems)
+            return refs_of(cfg.redeems)
         end
         if n == 2 and prev == "debug" then return ON_OFF end
     elseif sub == "set" then

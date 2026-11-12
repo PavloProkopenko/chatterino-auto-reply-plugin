@@ -1,6 +1,7 @@
 -- Loads/saves data/config.json (the plugin's data dir; relative paths in
 -- io.open resolve there).
 local json = require("chatterino.json")
+local names = require("names")
 
 local M = {}
 local FILE = "config.json"
@@ -106,6 +107,20 @@ function M.load()
         end
     end
     cfg.timers = good
+    -- drop invalid or duplicate names (hand-edited files)
+    for _, list in ipairs({ cfg.rules, cfg.timers, cfg.redeems }) do
+        local used = {}
+        for _, it in ipairs(list) do
+            if type(it) == "table" and it.name ~= nil then
+                local ok = type(it.name) == "string" and names.valid(it.name)
+                if ok and not used[names.key(it.name)] then
+                    used[names.key(it.name)] = true
+                else
+                    it.name = nil
+                end
+            end
+        end
+    end
     for _, key in ipairs({ "per_user_cooldown", "per_rule_cooldown", "global_min_gap" }) do
         if type(cfg[key]) ~= "number" or cfg[key] < 0 then
             cfg[key] = M.defaults()[key]

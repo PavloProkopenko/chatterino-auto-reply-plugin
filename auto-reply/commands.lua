@@ -4,6 +4,7 @@ local rules = require("rules")
 local E = require("engine")
 local U = require("ux")
 local W = require("wizard")
+local N = require("names")
 
 local M = {}
 
@@ -79,11 +80,25 @@ local TOPICS = {
         },
     },
     {
+        key = "names", aliases = { "rename", "name" },
+        summary = "имена вместо номеров для правил, счётчиков и наград",
+        lines = {
+            "Имена: у правила, счётчика или награды может быть имя вместо номера. Формат: 1-20 символов, буквы (в том числе русские), цифры, _ и -, минимум одна буква. Нельзя занимать названия команд (on, list, add ...). Регистр не важен, имя уникально среди правил / счётчиков / наград.",
+            "Задать имя при создании: name=<имя> сразу после add.",
+            '/autoreply add name=greet word привет Привет!  |  /autoreply timer add name=game "!game" Играем {time}  |  /autoreply redeem add name=mute1 timeout "Мут" 10m',
+            "Переименовать или убрать имя (дефис = убрать имя).",
+            "/autoreply rename rule|timer|redeem <номер|имя> <новое имя|->",
+            "Имя работает везде, где принимается номер, и его можно ставить вперёд.",
+            "/autoreply disable greet  |  /autoreply test greet привет  |  /autoreply rule greet disable  |  /autoreply timer game on  |  /autoreply redeem mute1 off",
+        },
+    },
+    {
         key = "rules", aliases = { "list", "remove", "enable", "disable" },
         summary = "список правил, удаление, включение/выключение",
         lines = {
             "Управление правилами: list = показать все с номерами, remove = удалить, enable/disable = включить/выключить одно правило. <id> это номер из list.",
             "/autoreply list | remove <id> | enable <id> | disable <id>",
+            "Вместо номера можно использовать имя (см. /autoreply help names): /autoreply disable greet, /autoreply rule greet disable.",
         },
     },
     {
@@ -115,6 +130,8 @@ local TOPICS = {
             "Если забыли включить вовремя: укажите, сколько уже прошло (15m, 1h30m). Пример: timer set 1 1h30m, и ответ сразу покажет «1 ч 30 мин».",
             "Что делать счётчику при смене категории (игры) на стриме: reset = начать заново (по умолчанию), stop = выключить, off = ничего не делать.",
             "/autoreply timer category <id> reset|stop|off",
+            "Счётчику можно дать имя и управлять им по имени вместо номера (см. help names).",
+            '/autoreply timer add name=game "!game" Играем уже {time}   затем: /autoreply timer game on | off | reset',
         },
     },
     {
@@ -131,6 +148,8 @@ local TOPICS = {
             "/autoreply protect add|remove|list <пользователь>",
             "mutelurkers: off = мутить можно только тех, кто писал в чат за последние 2 часа (защита от опечаток), on = мутить можно любого. backfire: on = защищённый ник возвращает мут автору (по умолчанию), off = просто отказ.",
             "/autoreply set mutelurkers on|off  |  /autoreply set backfire on|off",
+            "Награде можно дать имя и управлять ею по имени вместо номера (см. help names).",
+            '/autoreply redeem add name=mute1 timeout "<название награды>" 10m   затем: /autoreply redeem mute1 disable',
         },
     },
     {
@@ -163,6 +182,7 @@ local function help_index(ctx)
     out:add_system_message("Проверка без отправки: /autoreply test <id> <сообщение>")
     out:add_system_message("Правила: /autoreply list | remove <id> | enable <id> | disable <id>")
     out:add_system_message("Состояние: /autoreply on [30m|2h|forever] | off | status")
+    out:add_system_message("Имена вместо номеров: /autoreply rename rule <номер> <имя>, затем /autoreply disable <имя> (help names).")
     out:add_system_message("Подсказка по вводу: нажмите Tab после /autoreply, подставятся команды и варианты.")
     local keys = {}
     for _, t in ipairs(TOPICS) do
@@ -325,6 +345,12 @@ local function cmd_add(ctx, words)
         return
     end
     local rest = table.concat(words, " ", 3)
+    local name
+    name, rest = N.split_name_opt(rest)
+    if rest == "" then
+        add_usage(ctx)
+        return
+    end
     local conditions = {}
     local unquoted
     while true do
@@ -357,15 +383,26 @@ local function cmd_add(ctx, words)
         rest = after
     end
     local reply = rest
-    local id, err = E.add_rule(conditions, reply)
+    local id, err = E.add_rule(conditions, reply, nil, name)
     if not id then
         say(ctx, "не удалось добавить правило: " .. err)
         say(ctx, "подробнее: /autoreply help add | пошагово: /autoreply new")
         return
     end
-    say(ctx, string.format("добавлено правило #%d (%s) → %s", id, rules.describe(E.find_rule(id)), reply))
+    local added = E.find_rule(id)
+    say(ctx, string.format("добавлено правило %s (%s) → %s", N.label(added), rules.describe(added), reply))
     U.soft_warnings(ctx, conditions, reply, unquoted)
     U.after_add(ctx, id, conditions)
+end
+
+local function rule_line(r)
+    local mark = ""
+    if r.enabled == false then
+        mark = "  (выключено)"
+    elseif not rules.is_usable(r) then
+        mark = "  (нет ответа)"
+    end
+    return string.format("%s [%s] → %s%s", N.label(r), rules.describe(r), r.reply or "(нет ответа)", mark)
 end
 
 local function cmd_list(ctx)
@@ -374,13 +411,7 @@ local function cmd_list(ctx)
         return
     end
     for _, r in ipairs(E.cfg.rules) do
-        local mark = ""
-        if r.enabled == false then
-            mark = "  (выключено)"
-        elseif not rules.is_usable(r) then
-            mark = "  (нет ответа)"
-        end
-        say(ctx, string.format("#%d [%s] → %s%s", r.id, rules.describe(r), r.reply or "(нет ответа)", mark))
+        say(ctx, rule_line(r))
     end
     say(ctx, "проверка без отправки: /autoreply test <id> <сообщение>")
 end
@@ -388,14 +419,13 @@ end
 local RULE_OP_DONE = { remove = "удалено", enable = "включено", disable = "выключено" }
 
 local function cmd_rule_op(ctx, words, op)
-    local id = tonumber(words[3])
-    if not id then
-        say(ctx, "использование: /autoreply " .. op .. " <номер правила>  (номера: /autoreply list)")
+    if not words[3] then
+        say(ctx, "использование: /autoreply " .. op .. " <номер или имя правила>  (список: /autoreply list)")
         return
     end
-    local rule, idx = E.find_rule(id)
+    local rule, idx = N.find(E.cfg.rules, words[3])
     if not rule then
-        say(ctx, "нет правила с номером " .. id .. "; список: /autoreply list.")
+        say(ctx, "нет правила «" .. words[3] .. "»; список: /autoreply list.")
         return
     end
     if op == "remove" then
@@ -404,7 +434,7 @@ local function cmd_rule_op(ctx, words, op)
         rule.enabled = (op == "enable")
     end
     E.save()
-    say(ctx, string.format("правило #%d %s.", id, RULE_OP_DONE[op]))
+    say(ctx, string.format("правило %s %s.", N.label(rule), RULE_OP_DONE[op]))
 end
 
 local function cmd_ignore(ctx, words)
@@ -458,23 +488,58 @@ local function cmd_protect(ctx, words)
 end
 
 local function describe_redeem(r)
-    return string.format("#%d [%s] \"%s\" -> %s%s%s", r.id, r.channel, r.title, r.action,
+    return string.format("%s [%s] \"%s\" -> %s%s%s", N.label(r), r.channel, r.title, r.action,
         r.seconds and (" " .. util.format_duration(r.seconds)) or "", r.enabled == false and "  (выключено)" or "")
 end
 
 local REDEEM_OP_DONE = { remove = "удалено", enable = "включено", disable = "выключено" }
 
+-- Name-first form "<cmd> <name|id> <verb> ..." -> "<cmd> <verb> <name|id> ...".
+-- Returns the (maybe rewritten) words, or nil when it already answered.
+local function name_first(ctx, words, verbs, list, gen, listcmd, describe)
+    local w3 = words[3] and words[3]:lower()
+    if not w3 or verbs[w3] then
+        return words
+    end
+    local item = N.find(list, words[3])
+    if not item then
+        say(ctx, string.format("нет %s «%s»; список: /autoreply %s.", gen, words[3], listcmd))
+        return nil
+    end
+    if not words[4] then
+        say(ctx, describe(item))
+        return nil
+    end
+    local nw = { words[1], words[2], words[4], words[3] }
+    for i = 5, #words do
+        nw[#nw + 1] = words[i]
+    end
+    return nw
+end
+
+local REDEEM_VERBS = { add = true, list = true, remove = true, enable = true, disable = true, debug = true }
+
 local function cmd_redeem(ctx, words)
-    local sub = words[3] and words[3]:lower() or ""
     local list = E.cfg.redeems
+    words = name_first(ctx, words, REDEEM_VERBS, list, "награды", "redeem list", describe_redeem)
+    if not words then
+        return
+    end
+    local sub = words[3] and words[3]:lower() or ""
     if sub == "add" then
         local ok, ismod = pcall(function() return ctx.channel:is_mod() or ctx.channel:is_broadcaster() end)
         if not ok or not ismod then
             say(ctx, "добавлять награды может только модератор или стример этого канала (и канал должен быть на Twitch).")
             return
         end
-        local action = words[4] and words[4]:lower() or ""
-        local rest = table.concat(words, " ", 5)
+        local name
+        local argi = 4
+        if words[4] and words[4]:lower():match("^name=") then
+            name = words[4]:sub(6)
+            argi = 5
+        end
+        local action = words[argi] and words[argi]:lower() or ""
+        local rest = table.concat(words, " ", argi + 1)
         local title
         title, rest = take_arg(rest)
         local secs
@@ -482,12 +547,12 @@ local function cmd_redeem(ctx, words)
             secs = util.parse_duration(rest and rest:match("^(%S+)"))
         end
         if (action ~= "timeout" and action ~= "untimeout") or not title or (action == "timeout" and not secs) then
-            say(ctx, 'использование: /autoreply redeem add timeout "<название награды>" <время, например 10m>  |  redeem add untimeout "<название награды>"')
+            say(ctx, 'использование: /autoreply redeem add [name=<имя>] timeout "<название награды>" <время, например 10m>  |  redeem add [name=<имя>] untimeout "<название награды>"')
             say(ctx, "подробнее: /autoreply help redeem")
             return
         end
         local chan = util.norm_channel(ctx.channel:get_name())
-        local id, err = E.add_redeem(chan, action, title, secs)
+        local id, err = E.add_redeem(chan, action, title, secs, name)
         if not id then
             say(ctx, "не удалось добавить награду: " .. err)
             return
@@ -509,11 +574,9 @@ local function cmd_redeem(ctx, words)
         E.debug_redeem = (words[4] == "on")
         say(ctx, "отладка наград: " .. words[4] .. (E.debug_redeem and " (купите награду, и увидите, что получает плагин; сбрасывается при закрытии приложения)." or "."))
     elseif sub == "remove" or sub == "enable" or sub == "disable" then
-        local id = tonumber(words[4])
-        local r, idx
-        if id then r, idx = E.find_redeem(id) end
+        local r, idx = N.find(list, words[4])
         if not r then
-            say(ctx, "нет награды с таким номером; список: /autoreply redeem list.")
+            say(ctx, "нет награды «" .. tostring(words[4] or "") .. "»; список: /autoreply redeem list.")
             return
         end
         if sub == "remove" then
@@ -522,7 +585,7 @@ local function cmd_redeem(ctx, words)
             r.enabled = (sub == "enable")
         end
         E.save()
-        say(ctx, string.format("награда #%d %s.", id, REDEEM_OP_DONE[sub]))
+        say(ctx, string.format("награда %s %s.", N.label(r), REDEEM_OP_DONE[sub]))
     else
         say(ctx, "использование: /autoreply redeem add|list|remove|enable|disable|debug ...   (подробнее: /autoreply help redeem)")
     end
@@ -557,15 +620,33 @@ local function cmd_set(ctx, words)
     end
 end
 
+local function timer_line(t)
+    local state = "остановлен"
+    if t.enabled and t.started_at then
+        state = util.format_elapsed(E.timer_elapsed(t), t.format)
+    end
+    return string.format("%s [%s @%s, %s, при смене категории: %s] %s → %s", N.label(t), t.trigger, t.channel,
+        t.format, t.on_category, state, t.reply)
+end
+
+local TIMER_VERBS = { add = true, list = true, on = true, off = true, reset = true, set = true,
+    remove = true, format = true, category = true }
+
 local function cmd_timer(ctx, words)
-    local sub = words[3] and words[3]:lower() or ""
     local timers = E.cfg.timers
+    words = name_first(ctx, words, TIMER_VERBS, timers, "счётчика", "timer list", timer_line)
+    if not words then
+        return
+    end
+    local sub = words[3] and words[3]:lower() or ""
     if sub == "add" then
         local rest = table.concat(words, " ", 4)
+        local name
+        name, rest = N.split_name_opt(rest)
         local trigger
         trigger, rest = take_arg(rest)
         if not trigger then
-            say(ctx, 'использование: /autoreply timer add "<!команда>" [smart|full] <ответ с {time}>   (подробнее: /autoreply help timer)')
+            say(ctx, 'использование: /autoreply timer add [name=<имя>] "<!команда>" [smart|full] <ответ с {time}>   (подробнее: /autoreply help timer)')
             return
         end
         local fmt = "smart"
@@ -574,13 +655,14 @@ local function cmd_timer(ctx, words)
             fmt, rest = maybe, after
         end
         local chan = util.norm_channel(ctx.channel:get_name())
-        local id, err = E.add_timer(trigger, chan, rest, fmt)
+        local id, err = E.add_timer(trigger, chan, rest, fmt, name)
         if not id then
             say(ctx, "не удалось добавить счётчик: " .. err)
             say(ctx, 'пример: /autoreply timer add "!uptime" Играем уже {time}')
             return
         end
-        say(ctx, string.format("добавлен счётчик #%d (%s) в %s, отсчёт с текущего момента → %s", id, trigger, chan, rest))
+        say(ctx, string.format("добавлен счётчик %s (%s) в %s, отсчёт с текущего момента → %s",
+            N.label(E.find_timer(id)), trigger, chan, rest))
         if not util.contains(E.cfg.channels, chan) then
             say(ctx, "внимание: " .. chan .. " нет в списке каналов; добавьте: /autoreply channel add " .. chan)
         end
@@ -591,20 +673,17 @@ local function cmd_timer(ctx, words)
             return
         end
         for _, t in ipairs(timers) do
-            local state = "остановлен"
-            if t.enabled and t.started_at then
-                state = util.format_elapsed(E.timer_elapsed(t), t.format)
-            end
-            say(ctx, string.format("#%d [%s @%s, %s, при смене категории: %s] %s → %s", t.id, t.trigger, t.channel,
-                t.format, t.on_category, state, t.reply))
+            say(ctx, timer_line(t))
         end
         return
     end
-    local id = tonumber(words[4])
-    local t, idx
-    if id then t, idx = E.find_timer(id) end
+    local t, idx = N.find(timers, words[4])
     if not t then
-        say(ctx, "использование: /autoreply timer add|list|on|off|reset|set|remove|format|category ...  (номер из timer list; подробнее: /autoreply help timer)")
+        if words[4] and TIMER_VERBS[sub] then
+            say(ctx, "нет счётчика «" .. words[4] .. "»; список: /autoreply timer list.")
+        else
+            say(ctx, "использование: /autoreply timer add|list|on|off|reset|set|remove|format|category ...  (номер или имя из timer list; подробнее: /autoreply help timer)")
+        end
         return
     end
     -- optional start offset for on/reset/set, e.g. 1h30m = "already running for 1h30m"
@@ -624,25 +703,25 @@ local function cmd_timer(ctx, words)
     local from = offset and util.format_elapsed(offset, "smart") or "0"
     if sub == "on" then
         E.set_timer_enabled(t, true, offset)
-        say(ctx, string.format("счётчик #%d запущен с %s.", id, from))
+        say(ctx, string.format("счётчик %s запущен с %s.", N.label(t), from))
     elseif sub == "off" then
         E.set_timer_enabled(t, false)
-        say(ctx, string.format("счётчик #%d остановлен.", id))
+        say(ctx, string.format("счётчик %s остановлен.", N.label(t)))
     elseif sub == "reset" or sub == "set" then
         E.reset_timer(t, offset)
-        say(ctx, string.format("счётчик #%d перезапущен с %s.", id, from))
+        say(ctx, string.format("счётчик %s перезапущен с %s.", N.label(t), from))
     elseif sub == "remove" then
         table.remove(timers, idx)
         E.save()
-        say(ctx, string.format("счётчик #%d удалён.", id))
+        say(ctx, string.format("счётчик %s удалён.", N.label(t)))
     elseif sub == "format" and (words[5] == "smart" or words[5] == "full") then
         t.format = words[5]
         E.save()
-        say(ctx, string.format("формат счётчика #%d: %s.", id, t.format))
+        say(ctx, string.format("формат счётчика %s: %s.", N.label(t), t.format))
     elseif sub == "category" and (words[5] == "reset" or words[5] == "stop" or words[5] == "off") then
         t.on_category = words[5]
         E.save()
-        say(ctx, string.format("при смене категории счётчик #%d: %s.", id, t.on_category))
+        say(ctx, string.format("при смене категории счётчик %s: %s.", N.label(t), t.on_category))
     else
         say(ctx, "использование: /autoreply timer format <номер> smart|full  |  category <номер> reset|stop|off")
     end
@@ -661,7 +740,7 @@ local function cmd_test(ctx, words)
     end
     local text = table.concat(words, " ", idx)
     if not target or text == "" then
-        say(ctx, "использование: /autoreply test <номер правила|all> [flags=first,sub] <текст сообщения>")
+        say(ctx, "использование: /autoreply test <номер или имя правила|all> [flags=first,sub] <текст сообщения>")
         say(ctx, "пример: /autoreply test 1 привет всем   (номера: /autoreply list; подробнее: /autoreply help test)")
         return
     end
@@ -678,10 +757,9 @@ local function cmd_test(ctx, words)
             return
         end
     else
-        local id = tonumber(target)
-        local r = id and E.find_rule(id)
+        local r = N.find(E.cfg.rules, target)
         if not r then
-            say(ctx, "нет правила с номером «" .. target .. "»; список: /autoreply list. Или используйте all.")
+            say(ctx, "нет правила «" .. target .. "»; список: /autoreply list. Или используйте all.")
             return
         end
         list = { r }
@@ -691,7 +769,7 @@ local function cmd_test(ctx, words)
     say(ctx, "проверка (ничего не отправляется): «" .. text .. "»" .. (#flagnames > 0 and (" с флагами " .. table.concat(flagnames, ",")) or ""))
     for _, t in ipairs(E.cfg.timers) do
         if t.enabled and t.started_at and rules.matches_one({ type = "word", match = t.trigger }, text, mask, me) then
-            say(ctx, string.format("совпал счётчик #%d (%s): он срабатывает раньше правил.", t.id, t.trigger))
+            say(ctx, string.format("совпал счётчик %s (%s): он срабатывает раньше правил.", N.label(t), t.trigger))
         end
     end
     local winner
@@ -704,15 +782,15 @@ local function cmd_test(ctx, words)
         end
         if #failed == 0 then
             if not rules.is_usable(r) then
-                say(ctx, string.format("#%d: условия совпали, но правило выключено или без ответа — не сработает.", r.id))
+                say(ctx, string.format("%s: условия совпали, но правило выключено или без ответа — не сработает.", N.label(r)))
             elseif winner then
-                say(ctx, string.format("#%d: совпало, но выше уже сработает правило #%d (побеждает первое совпавшее).", r.id, winner))
+                say(ctx, string.format("%s: совпало, но выше уже сработает правило %s (побеждает первое совпавшее).", N.label(r), winner))
             else
-                winner = r.id
-                say(ctx, string.format("#%d: СОВПАЛО → ответ: %s", r.id, E.render(r.reply, fake)))
+                winner = N.label(r)
+                say(ctx, string.format("%s: СОВПАЛО → ответ: %s", winner, E.render(r.reply, fake)))
             end
         else
-            say(ctx, string.format("#%d: не совпало (не выполнено: %s)", r.id, table.concat(failed, "; ")))
+            say(ctx, string.format("%s: не совпало (не выполнено: %s)", N.label(r), table.concat(failed, "; ")))
         end
     end
     if winner then
@@ -721,6 +799,65 @@ local function cmd_test(ctx, words)
         elseif #E.cfg.channels == 0 then
             say(ctx, "но каналов нет: /autoreply channel add <канал>")
         end
+    end
+end
+
+-- /autoreply rule <name|id> [enable|disable|remove|test <text>]
+local function cmd_rule(ctx, words)
+    if not words[3] then
+        say(ctx, "использование: /autoreply rule <номер или имя> [enable|disable|remove|test <текст>]   (подробнее: /autoreply help names)")
+        return
+    end
+    local rule = N.find(E.cfg.rules, words[3])
+    if not rule then
+        say(ctx, "нет правила «" .. words[3] .. "»; список: /autoreply list.")
+        return
+    end
+    local verb = words[4] and words[4]:lower()
+    if not verb then
+        say(ctx, rule_line(rule))
+    elseif verb == "test" then
+        local nw = { words[1], "test", words[3] }
+        for i = 5, #words do
+            nw[#nw + 1] = words[i]
+        end
+        cmd_test(ctx, nw)
+    elseif RULE_OP_DONE[verb] then
+        cmd_rule_op(ctx, { words[1], verb, words[3] }, verb)
+    else
+        say(ctx, "неизвестное действие «" .. words[4] .. "»: доступны enable, disable, remove, test.")
+    end
+end
+
+local RENAME_KINDS = { rule = "rules", rules = "rules", timer = "timers", timers = "timers",
+    redeem = "redeems", redeems = "redeems", mute = "redeems" }
+
+-- /autoreply rename rule|timer|redeem <id|name> <new|->
+local function cmd_rename(ctx, words)
+    local key = words[3] and RENAME_KINDS[words[3]:lower()]
+    if not key or not words[4] or not words[5] then
+        say(ctx, "использование: /autoreply rename rule|timer|redeem <номер или имя> <новое имя | - чтобы убрать имя>")
+        return
+    end
+    local item = N.find(E.cfg[key], words[4])
+    if not item then
+        say(ctx, "не найдено: «" .. words[4] .. "» (" .. words[3] .. "). Посмотрите список: /autoreply list | timer list | redeem list")
+        return
+    end
+    local new = words[5]
+    if new == "-" then
+        new = nil
+    end
+    local before = N.label(item)
+    local ok, err = E.rename(key, item, new)
+    if not ok then
+        say(ctx, "не удалось переименовать: " .. err)
+        return
+    end
+    if new then
+        say(ctx, string.format("%s %s теперь называется «%s».", N.NOUN[key], before, new))
+    else
+        say(ctx, string.format("имя у %s %s убрано.", N.NOUN[key], before))
     end
 end
 
@@ -764,6 +901,10 @@ function M.handle(ctx)
         cmd_list(ctx)
     elseif sub == "test" then
         cmd_test(ctx, words)
+    elseif sub == "rule" then
+        cmd_rule(ctx, words)
+    elseif sub == "rename" then
+        cmd_rename(ctx, words)
     elseif sub == "remove" or sub == "enable" or sub == "disable" then
         cmd_rule_op(ctx, words, sub)
     elseif sub == "timer" or sub == "timers" then

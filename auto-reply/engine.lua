@@ -2,6 +2,7 @@
 local util = require("util")
 local config = require("config")
 local rules = require("rules")
+local N = require("names")
 
 local E = {}
 
@@ -165,7 +166,7 @@ function E.check_reply(reply)
 end
 
 -- conditions: list of {type=, match=}; ALL must match for the rule to fire.
-function E.add_rule(conditions, reply, channels)
+function E.add_rule(conditions, reply, channels, name)
     if type(conditions) ~= "table" or #conditions == 0 then
         return nil, "в правиле должно быть хотя бы одно условие"
     end
@@ -179,15 +180,34 @@ function E.add_rule(conditions, reply, channels)
     if not rok then
         return nil, rerr
     end
+    if name ~= nil then
+        local nok, nerr = N.check(E.cfg.rules, name, "rules")
+        if not nok then
+            return nil, nerr
+        end
+    end
     local cfg = E.cfg
     local id = cfg.next_rule_id
     cfg.next_rule_id = id + 1
     cfg.rules[#cfg.rules + 1] = {
-        id = id, conditions = conditions, reply = reply,
+        id = id, name = name, conditions = conditions, reply = reply,
         enabled = true, channels = channels or {},
     }
     E.save()
     return id
+end
+
+-- key: "rules" | "timers" | "redeems"; new = nil clears the name. Returns ok, err.
+function E.rename(key, item, new)
+    if new ~= nil then
+        local ok, err = N.check(E.cfg[key], new, key, item)
+        if not ok then
+            return false, err
+        end
+    end
+    item.name = new
+    E.save()
+    return true
 end
 
 function E.find_rule(id)
@@ -233,7 +253,7 @@ local function start_counting(t, offset_s)
     t.game_id = (st and st.live and st.game_id ~= "" and st.game_id) or nil
 end
 
-function E.add_timer(trigger, channel, reply, format)
+function E.add_timer(trigger, channel, reply, format, name)
     if not trigger or trigger == "" then
         return nil, "нужно слово-триггер"
     end
@@ -244,9 +264,15 @@ function E.add_timer(trigger, channel, reply, format)
     if not reply:find("{time}", 1, true) then
         return nil, "в ответе должен быть {time}"
     end
+    if name ~= nil then
+        local nok, nerr = N.check(E.cfg.timers, name, "timers")
+        if not nok then
+            return nil, nerr
+        end
+    end
     local cfg = E.cfg
     local t = {
-        id = cfg.next_timer_id, trigger = trigger, channel = channel,
+        id = cfg.next_timer_id, name = name, trigger = trigger, channel = channel,
         reply = reply, format = format or "smart", on_category = "reset",
     }
     cfg.next_timer_id = t.id + 1
@@ -298,14 +324,14 @@ function E.check_timers()
                         local game = (st.game_name and st.game_name ~= "") and st.game_name or gid
                         if t.on_category == "stop" then
                             E.set_timer_enabled(t, false)
-                            E.notify(string.format("счётчик #%d (%s) остановлен: категория сменилась на %s.",
-                                t.id, t.trigger, game), nil)
+                            E.notify(string.format("счётчик %s (%s) остановлен: категория сменилась на %s.",
+                                N.label(t), t.trigger, game), nil)
                         else
                             t.started_at = now
                             t.game_id = gid
                             dirty = true
-                            E.notify(string.format("счётчик #%d (%s) перезапущен: категория сменилась на %s.",
-                                t.id, t.trigger, game), nil)
+                            E.notify(string.format("счётчик %s (%s) перезапущен: категория сменилась на %s.",
+                                N.label(t), t.trigger, game), nil)
                         end
                     end
                 end
@@ -314,7 +340,7 @@ function E.check_timers()
                 timer_offline[t.id] = since
                 if now - since >= OFFLINE_GRACE_S then
                     E.set_timer_enabled(t, false)
-                    E.notify(string.format("счётчик #%d (%s) остановлен: стрим ушёл в офлайн.", t.id, t.trigger))
+                    E.notify(string.format("счётчик %s (%s) остановлен: стрим ушёл в офлайн.", N.label(t), t.trigger))
                 end
             end
         end
@@ -451,7 +477,7 @@ local function enqueue(channel, text, command)
 end
 
 -- ---------- channel-point rewards -> /timeout, /untimeout ----------
-function E.add_redeem(channel, action, title, seconds)
+function E.add_redeem(channel, action, title, seconds, name)
     if action ~= "timeout" and action ~= "untimeout" then
         return nil, "действие должно быть timeout или untimeout"
     end
@@ -467,9 +493,15 @@ function E.add_redeem(channel, action, title, seconds)
             return nil, "для этой награды уже есть правило #" .. r.id
         end
     end
+    if name ~= nil then
+        local nok, nerr = N.check(E.cfg.redeems, name, "redeems")
+        if not nok then
+            return nil, nerr
+        end
+    end
     local cfg = E.cfg
     local r = {
-        id = cfg.next_redeem_id, channel = channel, title = title, action = action,
+        id = cfg.next_redeem_id, name = name, channel = channel, title = title, action = action,
         seconds = action == "timeout" and seconds or nil, enabled = true,
     }
     cfg.next_redeem_id = r.id + 1
