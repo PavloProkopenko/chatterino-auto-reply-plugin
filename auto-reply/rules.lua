@@ -3,6 +3,13 @@ local M = {}
 
 M.TYPES = { "keyword", "word", "anyword", "mention", "flag", "pattern" }
 
+function M.is_type(s)
+    for _, t in ipairs(M.TYPES) do
+        if t == s then return true end
+    end
+    return false
+end
+
 -- friendly flag name -> c2.MessageFlag member
 M.FLAGS = {
     first = "FirstMessage",
@@ -205,10 +212,14 @@ function M.applies_to_channel(rule, channel)
 end
 
 -- A rule is a list of conditions that must ALL match. Old-style rules
--- (type/match on the rule itself) count as a single condition.
+-- (type/match on the rule itself) count as a single condition. Old-style timers
+-- (a bare `trigger` word) count as one whole-word condition.
 function M.conditions(rule)
     if type(rule.conditions) == "table" and #rule.conditions > 0 then
         return rule.conditions
+    end
+    if rule.type == nil and type(rule.trigger) == "string" then
+        return { { type = "word", match = rule.trigger } }
     end
     return { { type = rule.type, match = rule.match } }
 end

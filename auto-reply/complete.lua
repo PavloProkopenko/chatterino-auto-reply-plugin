@@ -115,6 +115,12 @@ local function candidates(args)
     elseif sub == "timer" or sub == "timers" then
         if n == 1 then return concat_lists(TIMER_VERBS, names_of(cfg.timers)) end
         if n == 2 and not TIMER_VERB_SET[prev] then return TIMER_VERBS end -- name-first form
+        if args[2] == "add" then
+            if prev == "add" or prev == "+" or prev:match("^name=") then return rules.TYPES end
+            if prev == "flag" and (prev2 == "add" or prev2 == "+") then return rules.FLAG_ORDER end
+            if prev == "=>" then return { "smart", "full" } end
+            return nil
+        end
         if n == 2 and prev ~= "add" and prev ~= "list" then return refs_of(cfg.timers) end
         if n == 3 and (args[2] == "format" or prev == "format") then return { "smart", "full" } end
         if n == 3 and (args[2] == "category" or prev == "category") then return { "reset", "stop", "off" } end

@@ -3,6 +3,7 @@
 local json = require("chatterino.json")
 local names = require("names")
 local util = require("util")
+local rules = require("rules")
 
 local M = {}
 local FILE = "config.json"
@@ -21,8 +22,8 @@ function M.defaults()
         only_when_live = false,
         next_rule_id = 1,
         rules = {},
-        -- time counters: {id, trigger, channel, reply, format, on_category,
-        -- enabled, started_at, game_id}
+        -- time counters: {id, conditions = [{type, match}] (legacy: trigger = one word),
+        -- channel, reply, format, on_category, enabled, started_at, game_id}
         next_timer_id = 1,
         timers = {},
         -- channel-point rewards -> /timeout|/untimeout:
@@ -116,8 +117,22 @@ function M.load()
     cfg.redeems = goodr
     local good = {}
     for _, t in ipairs(cfg.timers) do
-        if type(t) == "table" and type(t.trigger) == "string" and type(t.channel) == "string"
+        if type(t) == "table" and (type(t.trigger) == "string" or type(t.conditions) == "table")
+            and type(t.channel) == "string"
             and type(t.reply) == "string" and type(t.id) == "number" then
+            -- every condition must be valid; otherwise disable (never match everything)
+            if type(t.conditions) == "table" then
+                local okc = #t.conditions > 0
+                for _, c in ipairs(t.conditions) do
+                    if type(c) ~= "table" or type(c.type) ~= "string" or not rules.validate(c.type, c.match) then
+                        okc = false
+                    end
+                end
+                if not okc then
+                    t.enabled = false
+                    t.started_at = nil
+                end
+            end
             if type(t.started_at) ~= "number" then
                 t.started_at = nil
                 t.enabled = false

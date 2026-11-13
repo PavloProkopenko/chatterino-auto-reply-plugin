@@ -259,9 +259,16 @@ local function start_counting(t, offset_s)
     t.game_id = (st and st.live and st.game_id ~= "" and st.game_id) or nil
 end
 
-function E.add_timer(trigger, channel, reply, format, name)
-    if not trigger or trigger == "" then
-        return nil, "нужно слово-триггер"
+-- conditions: list of {type=, match=}, ALL must match (same model as rules).
+function E.add_timer(conditions, channel, reply, format, name)
+    if type(conditions) ~= "table" or #conditions == 0 then
+        return nil, "нужно хотя бы одно условие (слово-триггер)"
+    end
+    for _, c in ipairs(conditions) do
+        local ok, err = rules.validate(c.type, c.match)
+        if not ok then
+            return nil, c.type .. ": " .. err
+        end
     end
     local rok, rerr = E.check_reply(reply)
     if not rok then
@@ -278,7 +285,7 @@ function E.add_timer(trigger, channel, reply, format, name)
     end
     local cfg = E.cfg
     local t = {
-        id = cfg.next_timer_id, name = name, trigger = trigger, channel = channel,
+        id = cfg.next_timer_id, name = name, conditions = conditions, channel = channel,
         reply = reply, format = format or "smart", on_category = "reset",
     }
     cfg.next_timer_id = t.id + 1
@@ -331,13 +338,13 @@ function E.check_timers()
                         if t.on_category == "stop" then
                             E.set_timer_enabled(t, false)
                             E.notify(string.format("счётчик %s (%s) остановлен: категория сменилась на %s.",
-                                N.label(t), t.trigger, game), nil)
+                                N.label(t), rules.describe(t), game), nil)
                         else
                             t.started_at = now
                             t.game_id = gid
                             dirty = true
                             E.notify(string.format("счётчик %s (%s) перезапущен: категория сменилась на %s.",
-                                N.label(t), t.trigger, game), nil)
+                                N.label(t), rules.describe(t), game), nil)
                         end
                     end
                 end
@@ -346,7 +353,7 @@ function E.check_timers()
                 timer_offline[t.id] = since
                 if now - since >= OFFLINE_GRACE_S then
                     E.set_timer_enabled(t, false)
-                    E.notify(string.format("счётчик %s (%s) остановлен: стрим ушёл в офлайн.", N.label(t), t.trigger))
+                    E.notify(string.format("счётчик %s (%s) остановлен: стрим ушёл в офлайн.", N.label(t), rules.describe(t)))
                 end
             end
         end
@@ -719,7 +726,7 @@ function E.on_message(chan_name, ch, msg)
     -- time counters (explicit commands) take priority over rules
     for _, t in ipairs(E.cfg.timers) do
         if t.enabled and t.started_at and t.channel == chan_name
-            and rules.matches_one({ type = "word", match = t.trigger }, text, flags, me)
+            and rules.matches(t, text, flags, me)
         then
             local rkey = chan_name .. "|t" .. tostring(t.id)
             local last_rule = rule_cd[rkey]

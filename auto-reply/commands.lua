@@ -129,6 +129,9 @@ local TOPICS = {
         lines = {
             "Счётчик времени: чат-команда, в ответ на которую бот пишет, сколько прошло с момента включения (например, сколько стример играет). В ответе обязательно {time}; можно {user}. Счётчик стартует сразу при добавлении, привязан к текущему каналу. smart = «2 ч 35 мин» (меньше минуты: «только начал»), full = 2:35:07. Если стрим ушёл в офлайн (более 2 минут), счётчик сам выключается.",
             '/autoreply timer add "<!команда>" [smart|full] <ответ с {time}>',
+            "Вместо одного слова можно задать условия как у правил (типы: /autoreply help types), несколько через +; после условий обязателен разделитель => перед ответом. Счётчик сработает, только если совпали все условия.",
+            '/autoreply timer add anyword "давно|сколько" + anyword "играет|играем" => smart @{user} играет уже {time}',
+            "Условия счётчика потом не меняются: удалите (timer remove) и добавьте заново.",
             "Управление счётчиками: list = показать с текущим временем, on = включить (отсчёт с нуля), off = выключить, reset = начать отсчёт заново, set = задать, сколько уже прошло, remove = удалить, format = формат времени.",
             "/autoreply timer list | on <id> [время] | off <id> | reset <id> [время] | set <id> <время> | remove <id> | format <id> smart|full",
             "Если забыли включить вовремя: укажите, сколько уже прошло (15m, 1h30m). Пример: timer set 1 1h30m, и ответ сразу покажет «1 ч 30 мин».",
@@ -389,6 +392,44 @@ local function add_usage(ctx)
     say(ctx, "подробнее: /autoreply help add (типы: /autoreply help types), или пошагово: /autoreply new")
 end
 
+-- Parses `<type> [match] [+ <type> [match] ...]` from the start of `rest`.
+-- Returns conditions, rest, unquoted (first unquoted multi-word-prone cond) or nil
+-- after saying the error itself.
+local function parse_conditions(ctx, rest)
+    local conditions = {}
+    local unquoted
+    while true do
+        local rtype
+        rtype, rest = take_arg(rest)
+        if not rtype then
+            say(ctx, "не указан тип условия. Типы: " .. table.concat(rules.TYPES, ", ") .. " (что это: /autoreply help types)")
+            return nil
+        end
+        rtype = rtype:lower()
+        local cond = { type = rtype }
+        if not NO_ARG[rtype] then
+            local match, quoted
+            match, rest, quoted = take_arg(rest)
+            if not match then
+                say(ctx, "для «" .. rtype .. "» не указан текст или не закрыта кавычка (фразу с пробелами берите в кавычки).")
+                say(ctx, 'пример: /autoreply add word "добрый вечер" Привет, {user}!')
+                return nil
+            end
+            cond.match = (rtype == "flag") and match:lower() or match
+            if not quoted and not unquoted and rtype ~= "flag" then
+                unquoted = cond
+            end
+        end
+        conditions[#conditions + 1] = cond
+        local after = rest:match("^%+%s+(.*)$")
+        if not after then
+            break
+        end
+        rest = after
+    end
+    return conditions, rest, unquoted
+end
+
 local function cmd_add(ctx, words)
     if not words[3] then
         add_usage(ctx)
@@ -411,36 +452,10 @@ local function cmd_add(ctx, words)
         add_usage(ctx)
         return
     end
-    local conditions = {}
-    local unquoted
-    while true do
-        local rtype
-        rtype, rest = take_arg(rest)
-        if not rtype then
-            say(ctx, "не указан тип условия. Типы: " .. table.concat(rules.TYPES, ", ") .. " (что это: /autoreply help types)")
-            return
-        end
-        rtype = rtype:lower()
-        local cond = { type = rtype }
-        if not NO_ARG[rtype] then
-            local match, quoted
-            match, rest, quoted = take_arg(rest)
-            if not match then
-                say(ctx, "для «" .. rtype .. "» не указан текст или не закрыта кавычка (фразу с пробелами берите в кавычки).")
-                say(ctx, 'пример: /autoreply add word "добрый вечер" Привет, {user}!')
-                return
-            end
-            cond.match = (rtype == "flag") and match:lower() or match
-            if not quoted and not unquoted and rtype ~= "flag" then
-                unquoted = cond
-            end
-        end
-        conditions[#conditions + 1] = cond
-        local after = rest:match("^%+%s+(.*)$")
-        if not after then
-            break
-        end
-        rest = after
+    local conditions, unquoted
+    conditions, rest, unquoted = parse_conditions(ctx, rest)
+    if not conditions then
+        return
     end
     local reply = rest
     local id, err = E.add_rule(conditions, reply, channels, name)
@@ -722,12 +737,15 @@ local function timer_line(t)
     if t.enabled and t.started_at then
         state = util.format_elapsed(E.timer_elapsed(t), t.format)
     end
-    return string.format("%s [%s @%s, %s, при смене категории: %s] %s → %s", N.label(t), t.trigger, t.channel,
+    return string.format("%s [%s @%s, %s, при смене категории: %s] %s → %s", N.label(t), rules.describe(t), t.channel,
         t.format, t.on_category, state, t.reply)
 end
 
 local TIMER_VERBS = { add = true, list = true, on = true, off = true, reset = true, set = true,
     remove = true, format = true, category = true }
+
+local TIMER_USAGE = 'использование: /autoreply timer add [name=<имя>] <условие> [+ <условие> ...] => [smart|full] <ответ с {time}>  или  timer add "<!команда>" [smart|full] <ответ с {time}>   (подробнее: /autoreply help timer)'
+local TIMER_EXAMPLE = 'пример: /autoreply timer add anyword "давно|сколько" + anyword "играет|играем" => smart @{user} играет уже {time}'
 
 local function cmd_timer(ctx, words)
     local timers = E.cfg.timers
@@ -740,11 +758,30 @@ local function cmd_timer(ctx, words)
         local rest = table.concat(words, " ", 4)
         local name
         name, rest = N.split_name_opt(rest)
-        local trigger
-        trigger, rest = take_arg(rest)
-        if not trigger then
-            say(ctx, 'использование: /autoreply timer add [name=<имя>] "<!команда>" [smart|full] <ответ с {time}>   (подробнее: /autoreply help timer)')
-            return
+        local conditions
+        local first, _, first_quoted = take_arg(rest)
+        if first and not first_quoted and rules.is_type(first:lower()) then
+            -- rule-style: <cond> [+ <cond>...] => [smart|full] <reply>
+            conditions, rest = parse_conditions(ctx, rest)
+            if not conditions then
+                return
+            end
+            local after = rest:match("^=>%s*(.*)$")
+            if not after then
+                say(ctx, "после условий нужен разделитель => перед ответом.")
+                say(ctx, TIMER_EXAMPLE)
+                return
+            end
+            rest = after
+        else
+            -- legacy: one whole-word trigger
+            local trigger
+            trigger, rest = take_arg(rest)
+            if not trigger then
+                say(ctx, TIMER_USAGE)
+                return
+            end
+            conditions = { { type = "word", match = trigger } }
         end
         local fmt = "smart"
         local maybe, after = take_arg(rest)
@@ -752,14 +789,15 @@ local function cmd_timer(ctx, words)
             fmt, rest = maybe, after
         end
         local chan = util.norm_channel(ctx.channel:get_name())
-        local id, err = E.add_timer(trigger, chan, rest, fmt, name)
+        local id, err = E.add_timer(conditions, chan, rest, fmt, name)
         if not id then
             say(ctx, "не удалось добавить счётчик: " .. err)
             say(ctx, 'пример: /autoreply timer add "!uptime" Играем уже {time}')
+            say(ctx, TIMER_EXAMPLE)
             return
         end
         say(ctx, string.format("добавлен счётчик %s (%s) в %s, отсчёт с текущего момента → %s",
-            N.label(E.find_timer(id)), trigger, chan, rest))
+            N.label(E.find_timer(id)), rules.describe(E.find_timer(id)), chan, rest))
         if not util.contains(E.cfg.channels, chan) then
             say(ctx, "внимание: " .. chan .. " нет в списке каналов; добавьте: /autoreply channel add " .. chan)
         end
@@ -865,8 +903,8 @@ local function cmd_test(ctx, words)
     local fake = { display_name = "Зритель", login_name = "viewer" }
     say(ctx, "проверка (ничего не отправляется): «" .. text .. "»" .. (#flagnames > 0 and (" с флагами " .. table.concat(flagnames, ",")) or ""))
     for _, t in ipairs(E.cfg.timers) do
-        if t.enabled and t.started_at and rules.matches_one({ type = "word", match = t.trigger }, text, mask, me) then
-            say(ctx, string.format("совпал счётчик %s (%s): он срабатывает раньше правил.", N.label(t), t.trigger))
+        if t.enabled and t.started_at and rules.matches(t, text, mask, me) then
+            say(ctx, string.format("совпал счётчик %s (%s): он срабатывает раньше правил.", N.label(t), rules.describe(t)))
         end
     end
     local winner
