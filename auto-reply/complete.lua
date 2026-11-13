@@ -10,9 +10,10 @@ local SUBCOMMANDS = {
     "enable", "disable", "timer", "ignore", "redeem", "protect", "set", "reload", "help",
     "cancel", "back", "rule", "rename",
 }
-local TIMER_VERBS = { "add", "list", "on", "off", "reset", "set", "remove", "format", "category" }
+local TIMER_VERBS = { "add", "list", "on", "off", "reset", "set", "remove", "format", "category", "skip" }
 local REDEEM_VERBS = { "add", "list", "remove", "enable", "disable", "debug" }
-local RULE_VERBS = { "enable", "disable", "remove", "channel", "test" }
+local RULE_VERBS = { "enable", "disable", "remove", "channel", "skip", "test" }
+local SKIP_VERBS = { "mods", "nomods", "add", "remove", "none" }
 local RENAME_KINDS = { "rule", "timer", "redeem" }
 
 local function set_of(list)
@@ -60,6 +61,8 @@ local function concat_lists(a, b)
     return out
 end
 
+local N_find = require("names").find
+
 local KIND_LIST = { rule = "rules", rules = "rules", timer = "timers", timers = "timers",
     redeem = "redeems", redeems = "redeems", mute = "redeems" }
 
@@ -91,7 +94,7 @@ local function candidates(args)
         if n == 1 then return { "add", "remove", "list" } end
         if n == 2 and prev == "remove" then return cfg.channels end
     elseif sub == "add" then
-        if prev == "add" or prev == "+" or prev:match("^channel=") or prev:match("^name=") then
+        if prev == "add" or prev == "+" or prev:match("^channel=") or prev:match("^name=") or prev:match("^skip=") then
             return rules.TYPES
         end
         if prev == "flag" and (prev2 == "add" or prev2 == "+") then
@@ -109,6 +112,11 @@ local function candidates(args)
         if n == 1 then return refs_of(cfg.rules) end
         if n == 2 then return RULE_VERBS end
         if n == 3 and prev == "channel" then return concat_lists({ "all", "here" }, cfg.channels) end
+        if n == 3 and prev == "skip" then return SKIP_VERBS end
+        if n == 4 and prev == "remove" and args[3] == "skip" then
+            local r = N_find(cfg.rules, args[2])
+            return r and r.skip_users or nil
+        end
     elseif sub == "rename" then
         if n == 1 then return RENAME_KINDS end
         if n == 2 and KIND_LIST[prev] then return refs_of(cfg[KIND_LIST[prev]]) end
@@ -116,12 +124,17 @@ local function candidates(args)
         if n == 1 then return concat_lists(TIMER_VERBS, names_of(cfg.timers)) end
         if n == 2 and not TIMER_VERB_SET[prev] then return TIMER_VERBS end -- name-first form
         if args[2] == "add" then
-            if prev == "add" or prev == "+" or prev:match("^name=") then return rules.TYPES end
+            if prev == "add" or prev == "+" or prev:match("^name=") or prev:match("^skip=") then return rules.TYPES end
             if prev == "flag" and (prev2 == "add" or prev2 == "+") then return rules.FLAG_ORDER end
             if prev == "=>" then return { "smart", "full" } end
             return nil
         end
         if n == 2 and prev ~= "add" and prev ~= "list" then return refs_of(cfg.timers) end
+        if n == 3 and args[2] == "skip" then return SKIP_VERBS end
+        if n == 4 and args[2] == "skip" and prev == "remove" then
+            local t = N_find(cfg.timers, args[3])
+            return t and t.skip_users or nil
+        end
         if n == 3 and (args[2] == "format" or prev == "format") then return { "smart", "full" } end
         if n == 3 and (args[2] == "category" or prev == "category") then return { "reset", "stop", "off" } end
     elseif sub == "ignore" then
@@ -139,8 +152,8 @@ local function candidates(args)
         end
         if n == 2 and prev == "debug" then return ON_OFF end
     elseif sub == "set" then
-        if n == 1 then return { "usercd", "rulecd", "gap", "live", "mutelurkers", "backfire" } end
-        if n == 2 and (prev == "live" or prev == "mutelurkers" or prev == "backfire") then
+        if n == 1 then return { "usercd", "rulecd", "gap", "live", "skipmods", "mutelurkers", "backfire" } end
+        if n == 2 and (prev == "live" or prev == "skipmods" or prev == "mutelurkers" or prev == "backfire") then
             return ON_OFF
         end
     end
@@ -169,6 +182,9 @@ function C.complete(text)
         args[#args + 1] = words[i]:lower()
     end
     local list = candidates(args)
+    if (args[1] == "add" or (args[1] == "timer" and args[2] == "add")) and current:lower():match("^skip=") then
+        list = { "skip=mods", "skip=nomods" }
+    end
     if args[1] == "add" and current:lower():match("^channel=") then
         list = {}
         for _, v in ipairs(concat_lists({ "all", "here" }, E.cfg.channels)) do

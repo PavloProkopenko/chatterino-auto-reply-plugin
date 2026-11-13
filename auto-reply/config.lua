@@ -20,6 +20,7 @@ function M.defaults()
         per_rule_cooldown = 10, -- seconds, per rule per channel
         global_min_gap = 2, -- seconds between any two auto-replies
         only_when_live = false,
+        skip_mods = false, -- global: moderators don't trigger rules/timers (per item: skip_mods)
         next_rule_id = 1,
         rules = {},
         -- time counters: {id, conditions = [{type, match}] (legacy: trigger = one word),
@@ -83,6 +84,26 @@ function M.load()
     if type(cfg.mute_lurkers) ~= "boolean" then cfg.mute_lurkers = false end
     if type(cfg.backfire) ~= "boolean" then cfg.backfire = true end
     if type(cfg.redeems) ~= "table" then cfg.redeems = {} end
+    if type(cfg.skip_mods) ~= "boolean" then cfg.skip_mods = false end
+    -- sender restrictions on rules/timers: bad data = no extra restriction
+    local function clean_skip(item)
+        if type(item) ~= "table" then return end
+        if type(item.skip_mods) ~= "boolean" then item.skip_mods = nil end
+        if item.skip_users ~= nil then
+            local clean = {}
+            if type(item.skip_users) == "table" then
+                for _, u in ipairs(item.skip_users) do
+                    u = type(u) == "string" and util.norm_user(u) or ""
+                    if u:match("^[%w_]+$") and not util.contains(clean, u) then
+                        clean[#clean + 1] = u
+                    end
+                end
+            end
+            item.skip_users = #clean > 0 and clean or nil
+        end
+    end
+    for _, r in ipairs(cfg.rules) do clean_skip(r) end
+    for _, t in ipairs(cfg.timers) do clean_skip(t) end
     -- rule channel scope: never widen a bound rule to global because of bad data
     for _, r in ipairs(cfg.rules) do
         if type(r) == "table" and r.channels ~= nil then

@@ -54,6 +54,33 @@ function M.norm_user(name)
     return name
 end
 
+-- Parses a sender restriction: "mods" | "nomods" | logins, comma separated ("mods,vasya").
+-- Returns {mods = true|false|nil, users = {...}} or nil, err.
+function M.parse_skip(str)
+    str = tostring(str or ""):lower()
+    if str == "" then
+        return nil, "не указано, кого пропускать (например skip=mods, skip=vasya,petya или skip=mods,vasya)"
+    end
+    local spec = { users = {} }
+    for raw in (str .. ","):gmatch("([^,]*),") do
+        local tok = M.norm_user(raw)
+        if tok == "mods" or tok == "nomods" then
+            local want = (tok == "mods")
+            if spec.mods ~= nil and spec.mods ~= want then
+                return nil, "mods и nomods вместе указать нельзя"
+            end
+            spec.mods = want
+        elseif tok:match("^[%w_]+$") and #tok <= 25 then
+            if not M.contains(spec.users, tok) then
+                spec.users[#spec.users + 1] = tok
+            end
+        else
+            return nil, "неверное имя пользователя «" .. tok .. "» (только латинские буквы, цифры и _; или mods / nomods)"
+        end
+    end
+    return spec
+end
+
 -- "90s" "30m" "2h" "1d" "1h30m" -> seconds, or nil
 function M.parse_duration(str)
     if not str or str == "" then

@@ -10,7 +10,7 @@ N.NOUN = { rules = "правило", timers = "счётчик", redeems = "на�
 local RESERVED = {}
 for w in ([[on off toggle status channel channels add new wizard list test remove enable disable
     timer timers ignore redeem mute protect set reload help cancel back rule rename reset format
-    category debug timeout untimeout smart full all name]]):gmatch("%S+") do
+    category debug timeout untimeout smart full all name skip mods nomods]]):gmatch("%S+") do
     RESERVED[w] = true
 end
 
@@ -100,14 +100,18 @@ function N.split_name_opt(rest)
     return nil, rest
 end
 
--- Strips leading "name=<token>" / "channel=<token>" options in any order.
--- Returns opts ({name=, channel=}; empty string if the value is empty), rest.
-function N.split_opts(rest)
+local DEFAULT_OPT_KEYS = { name = true, channel = true, skip = true }
+
+-- Strips leading "name=<token>" / "channel=<token>" / "skip=<token>" options in any order.
+-- keys: optional set of accepted option names (default: all three).
+-- Returns opts ({name=, channel=, skip=}; empty string if the value is empty), rest.
+function N.split_opts(rest, keys)
+    keys = keys or DEFAULT_OPT_KEYS
     local opts = {}
     while true do
         local key, val, tail = rest:match("^(%a+)=(%S*)%s*(.*)$")
         key = key and key:lower()
-        if (key == "name" or key == "channel") and opts[key] == nil then
+        if keys[key] and opts[key] == nil then
             opts[key] = val
             rest = tail
         else

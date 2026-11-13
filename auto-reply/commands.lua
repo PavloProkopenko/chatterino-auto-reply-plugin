@@ -78,9 +78,26 @@ local TOPICS = {
         summary = "проверить правило без отправки сообщения",
         lines = {
             "Проверка правила без отправки: покажет, сработает ли правило на примере текста, и какой будет ответ. <id> = номер из list или all (все правила). Для условий flag добавьте flags=first,sub перед текстом.",
-            "/autoreply test <id|all> [flags=first,sub] <текст сообщения>",
+            "/autoreply test <id|all> [flags=first,sub] [as=mod|ник] <текст сообщения>",
             "Пример: проверить правило №1 на сообщении «привет всем».",
             "/autoreply test 1 привет всем",
+            "as=mod проверяет, как правило отреагирует, если напишет модератор; as=<ник> — конкретный пользователь (работает вместе с настройкой skip, см. help skip).",
+            "/autoreply test 1 as=mod привет всем",
+        },
+    },
+    {
+        key = "skip", aliases = { "skipmods", "mods" },
+        summary = "не отвечать модераторам или выбранным пользователям",
+        lines = {
+            "Ограничение «кто запускает ответ»: у правила или счётчика можно указать, что сообщения модераторов и/или выбранных пользователей его не запускают. Такое сообщение считается «не совпало»: проверка идёт дальше, и другое правило ниже всё равно может ответить. Паузы при этом не тратятся.",
+            "При создании: skip=mods | skip=nomods | skip=ник,ник | skip=mods,ник (после add / timer add, вместе с name=, channel=).",
+            '/autoreply add skip=mods word "!донат" @{user} ссылка...  |  /autoreply timer add skip=mods,vasya "!game" Играем {time}',
+            "Потом: mods = модераторы не запускают это правило, nomods = модераторы запускают, даже если включён общий запрет, add/remove = список пользователей, none = сбросить всё (модераторы по общей настройке). Без аргумента — показать текущие.",
+            "/autoreply rule <номер|имя> skip [mods|nomods|add <ник>|remove <ник>|none]  |  /autoreply timer skip <номер|имя> [mods|nomods|add <ник>|remove <ник>|none]",
+            "Общая настройка для всех правил и счётчиков (по умолчанию выключена; отдельное правило её переопределяет).",
+            "/autoreply set skipmods on|off",
+            "Важно: модератор определяется по значку в чате. Если приложение значок не показало, сообщение считается обычным и ответ сработает. Стример модератором не считается: добавьте его ник через skip add.",
+            "/autoreply rule 1 skip add streamer_login  |  /autoreply test 1 as=mod !донат",
         },
     },
     {
@@ -121,6 +138,8 @@ local TOPICS = {
             "/autoreply set usercd|rulecd|gap <секунды>",
             "Отвечать только когда стрим идёт (live): on = да, off = в любое время.",
             "/autoreply set live on|off",
+            "skipmods on = модераторы канала по умолчанию не запускают ответы правил и счётчиков (для отдельного правила можно переопределить: help skip). Выключено по умолчанию.",
+            "/autoreply set skipmods on|off",
         },
     },
     {
@@ -295,6 +314,7 @@ local function status(ctx)
     say(ctx, string.format("правила: %d (активных %d) | паузы: пользователь %dс, правило %dс, общая %dс | только на стриме: %s",
         #cfg.rules, usable, cfg.per_user_cooldown, cfg.per_rule_cooldown,
         cfg.global_min_gap, cfg.only_when_live and "да" or "нет"))
+    say(ctx, "модераторы запускают ответы: " .. (cfg.skip_mods and "нет (set skipmods off, чтобы разрешить)" or "да (set skipmods on, чтобы запретить)"))
     local dormant = 0
     for _, r in ipairs(cfg.rules) do
         if is_dormant(r) then dormant = dormant + 1 end
@@ -385,8 +405,74 @@ end
 
 local NO_ARG = { mention = true }
 
+-- Short description of a rule/timer sender restriction ("" when there is none).
+local function skip_text(item)
+    local parts = {}
+    if E.skips_mods(item) then
+        parts[#parts + 1] = "модераторы"
+    end
+    for _, u in ipairs(item.skip_users or {}) do
+        parts[#parts + 1] = u
+    end
+    if #parts == 0 then
+        return ""
+    end
+    return "не отвечает: " .. table.concat(parts, ", ")
+end
+
+-- Full status line for `rule <ref> skip` / `timer skip <ref>`.
+local function skip_status(item)
+    local mods
+    if item.skip_mods == true then
+        mods = "модераторы пропускаются (задано для этого элемента)"
+    elseif item.skip_mods == false then
+        mods = "модераторы отвечают (задано для этого элемента)"
+    elseif E.cfg.skip_mods then
+        mods = "модераторы пропускаются (общая настройка set skipmods on)"
+    else
+        mods = "модераторы отвечают (общая настройка set skipmods off)"
+    end
+    local users = (item.skip_users and #item.skip_users > 0) and table.concat(item.skip_users, ", ") or "нет"
+    return string.format("%s: %s; пропускаются пользователи: %s", N.label(item), mods, users)
+end
+
+-- skip <mods|nomods|none|add <user>|remove <user>> for a rule or timer; args = words after "skip".
+-- cmdline: how to call it again, for the hint.
+local function handle_skip(ctx, item, args, cmdline)
+    local verb = args[1] and args[1]:lower()
+    if not verb then
+        say(ctx, skip_status(item))
+        say(ctx, "изменить: " .. cmdline .. " mods | nomods | add <ник> | remove <ник> | none")
+        return
+    end
+    if verb == "mods" or verb == "nomods" then
+        E.set_skip_mods(item, verb == "mods")
+    elseif verb == "none" then
+        E.set_skip(item, nil)
+    elseif verb == "add" or verb == "remove" then
+        local user = util.norm_user(args[2])
+        if user == "" or not user:match("^[%w_]+$") or #user > 25 then
+            say(ctx, "укажите ник (латинские буквы, цифры и _): " .. cmdline .. " " .. verb .. " <ник>")
+            return
+        end
+        if verb == "add" then
+            if not E.add_skip_user(item, user) then
+                say(ctx, user .. " уже в списке.")
+                return
+            end
+        elseif not E.remove_skip_user(item, user) then
+            say(ctx, user .. " не было в списке.")
+            return
+        end
+    else
+        say(ctx, "неизвестное действие «" .. args[1] .. "»: доступны mods, nomods, add, remove, none.")
+        return
+    end
+    say(ctx, skip_status(item))
+end
+
 local function add_usage(ctx)
-    say(ctx, 'использование: /autoreply add [name=<имя>] [channel=<канал[,канал]|here|all>] <условие> [+ <условие> ...] <ответ>')
+    say(ctx, 'использование: /autoreply add [name=<имя>] [channel=<канал[,канал]|here|all>] [skip=<mods|nomods|ник,ник>] <условие> [+ <условие> ...] <ответ>')
     say(ctx, 'условия: keyword|word|anyword|pattern "текст", flag <имя>, mention')
     say(ctx, 'пример: /autoreply add word "привет" Привет, {user}!')
     say(ctx, "подробнее: /autoreply help add (типы: /autoreply help types), или пошагово: /autoreply new")
@@ -448,6 +534,15 @@ local function cmd_add(ctx, words)
             return
         end
     end
+    local skip
+    if opts.skip ~= nil then
+        local err
+        skip, err = util.parse_skip(opts.skip)
+        if not skip then
+            say(ctx, "не удалось добавить правило: " .. err)
+            return
+        end
+    end
     if rest == "" then
         add_usage(ctx)
         return
@@ -458,7 +553,7 @@ local function cmd_add(ctx, words)
         return
     end
     local reply = rest
-    local id, err = E.add_rule(conditions, reply, channels, name)
+    local id, err = E.add_rule(conditions, reply, channels, name, skip)
     if not id then
         say(ctx, "не удалось добавить правило: " .. err)
         say(ctx, "подробнее: /autoreply help add | пошагово: /autoreply new")
@@ -466,6 +561,9 @@ local function cmd_add(ctx, words)
     end
     local added = E.find_rule(id)
     say(ctx, string.format("добавлено правило %s (%s) → %s", N.label(added), rules.describe(added), reply))
+    if skip then
+        say(ctx, skip_status(added))
+    end
     if channels and #channels > 0 then
         say(ctx, "действует только в: " .. scope_text(added))
         warn_unwatched(ctx, channels)
@@ -487,6 +585,10 @@ local function rule_line(r)
     local scope = ""
     if type(r.channels) == "table" and #r.channels > 0 then
         scope = " {" .. scope_text(r) .. "}"
+    end
+    local st = skip_text(r)
+    if st ~= "" then
+        mark = mark .. "  (" .. st .. ")"
     end
     return string.format("%s [%s]%s → %s%s", N.label(r), rules.describe(r), scope, r.reply or "(нет ответа)", mark)
 end
@@ -723,12 +825,16 @@ local function cmd_set(ctx, words)
         E.cfg[key == "mutelurkers" and "mute_lurkers" or "backfire"] = (val == "on")
         E.save()
         say(ctx, key .. ": " .. val)
+    elseif key == "skipmods" and (val == "on" or val == "off") then
+        E.cfg.skip_mods = (val == "on")
+        E.save()
+        say(ctx, "модераторы не запускают ответы (по умолчанию для всех правил и счётчиков): " .. val)
     elseif key == "live" and (val == "on" or val == "off") then
         E.cfg.only_when_live = (val == "on")
         E.save()
         say(ctx, "отвечать только когда идёт стрим: " .. val)
     else
-        say(ctx, "использование: /autoreply set usercd|rulecd|gap <секунды>  |  set live|mutelurkers|backfire on|off   (подробнее: /autoreply help set)")
+        say(ctx, "использование: /autoreply set usercd|rulecd|gap <секунды>  |  set live|skipmods|mutelurkers|backfire on|off   (подробнее: /autoreply help set)")
     end
 end
 
@@ -737,12 +843,13 @@ local function timer_line(t)
     if t.enabled and t.started_at then
         state = util.format_elapsed(E.timer_elapsed(t), t.format)
     end
-    return string.format("%s [%s @%s, %s, при смене категории: %s] %s → %s", N.label(t), rules.describe(t), t.channel,
-        t.format, t.on_category, state, t.reply)
+    local st = skip_text(t)
+    return string.format("%s [%s @%s, %s, при смене категории: %s] %s → %s%s", N.label(t), rules.describe(t), t.channel,
+        t.format, t.on_category, state, t.reply, st ~= "" and ("  (" .. st .. ")") or "")
 end
 
 local TIMER_VERBS = { add = true, list = true, on = true, off = true, reset = true, set = true,
-    remove = true, format = true, category = true }
+    remove = true, format = true, category = true, skip = true }
 
 local TIMER_USAGE = 'использование: /autoreply timer add [name=<имя>] <условие> [+ <условие> ...] => [smart|full] <ответ с {time}>  или  timer add "<!команда>" [smart|full] <ответ с {time}>   (подробнее: /autoreply help timer)'
 local TIMER_EXAMPLE = 'пример: /autoreply timer add anyword "давно|сколько" + anyword "играет|играем" => smart @{user} играет уже {time}'
@@ -756,8 +863,22 @@ local function cmd_timer(ctx, words)
     local sub = words[3] and words[3]:lower() or ""
     if sub == "add" then
         local rest = table.concat(words, " ", 4)
-        local name
-        name, rest = N.split_name_opt(rest)
+        local opts
+        opts, rest = N.split_opts(rest, { name = true, skip = true })
+        local name = opts.name
+        if rest:lower():match("^channel=") then
+            say(ctx, "счётчик всегда привязан к каналу, где введена команда; channel= здесь не нужен.")
+            return
+        end
+        local skip
+        if opts.skip ~= nil then
+            local serr
+            skip, serr = util.parse_skip(opts.skip)
+            if not skip then
+                say(ctx, "не удалось добавить счётчик: " .. serr)
+                return
+            end
+        end
         local conditions
         local first, _, first_quoted = take_arg(rest)
         if first and not first_quoted and rules.is_type(first:lower()) then
@@ -789,7 +910,7 @@ local function cmd_timer(ctx, words)
             fmt, rest = maybe, after
         end
         local chan = util.norm_channel(ctx.channel:get_name())
-        local id, err = E.add_timer(conditions, chan, rest, fmt, name)
+        local id, err = E.add_timer(conditions, chan, rest, fmt, name, skip)
         if not id then
             say(ctx, "не удалось добавить счётчик: " .. err)
             say(ctx, 'пример: /autoreply timer add "!uptime" Играем уже {time}')
@@ -798,6 +919,9 @@ local function cmd_timer(ctx, words)
         end
         say(ctx, string.format("добавлен счётчик %s (%s) в %s, отсчёт с текущего момента → %s",
             N.label(E.find_timer(id)), rules.describe(E.find_timer(id)), chan, rest))
+        if skip then
+            say(ctx, skip_status(E.find_timer(id)))
+        end
         if not util.contains(E.cfg.channels, chan) then
             say(ctx, "внимание: " .. chan .. " нет в списке каналов; добавьте: /autoreply channel add " .. chan)
         end
@@ -817,7 +941,7 @@ local function cmd_timer(ctx, words)
         if words[4] and TIMER_VERBS[sub] then
             say(ctx, "нет счётчика «" .. words[4] .. "»; список: /autoreply timer list.")
         else
-            say(ctx, "использование: /autoreply timer add|list|on|off|reset|set|remove|format|category ...  (номер или имя из timer list; подробнее: /autoreply help timer)")
+            say(ctx, "использование: /autoreply timer add|list|on|off|reset|set|remove|format|category|skip ...  (номер или имя из timer list; подробнее: /autoreply help timer)")
         end
         return
     end
@@ -849,6 +973,8 @@ local function cmd_timer(ctx, words)
         table.remove(timers, idx)
         E.save()
         say(ctx, string.format("счётчик %s удалён.", N.label(t)))
+    elseif sub == "skip" then
+        handle_skip(ctx, t, { table.unpack(words, 5) }, "/autoreply timer skip " .. words[4])
     elseif sub == "format" and (words[5] == "smart" or words[5] == "full") then
         t.format = words[5]
         E.save()
@@ -867,15 +993,32 @@ local function cmd_test(ctx, words)
     local target = words[3]
     local idx = 4
     local flagnames = {}
-    if words[4] and words[4]:lower():match("^flags=") then
-        for n in words[4]:sub(7):gmatch("[^,]+") do
-            flagnames[#flagnames + 1] = n:lower()
+    local sender, sender_mod = "viewer", false
+    while words[idx] do
+        local w = words[idx]:lower()
+        if w:match("^flags=") then
+            for n in w:sub(7):gmatch("[^,]+") do
+                flagnames[#flagnames + 1] = n
+            end
+        elseif w:match("^as=") then
+            local who = util.norm_user(w:sub(4))
+            if who == "mod" then
+                sender, sender_mod = "moderator", true
+            elseif who:match("^[%w_]+$") then
+                sender = who
+            else
+                say(ctx, "as= принимает mod или ник (например as=mod, as=vasya).")
+                return
+            end
+        else
+            break
         end
-        idx = 5
+        idx = idx + 1
     end
+    local function is_mod() return sender_mod end
     local text = table.concat(words, " ", idx)
     if not target or text == "" then
-        say(ctx, "использование: /autoreply test <номер или имя правила|all> [flags=first,sub] <текст сообщения>")
+        say(ctx, "использование: /autoreply test <номер или имя правила|all> [flags=first,sub] [as=mod|ник] <текст сообщения>")
         say(ctx, "пример: /autoreply test 1 привет всем   (номера: /autoreply list; подробнее: /autoreply help test)")
         return
     end
@@ -901,10 +1044,14 @@ local function cmd_test(ctx, words)
     end
     local me = U.my_login()
     local fake = { display_name = "Зритель", login_name = "viewer" }
-    say(ctx, "проверка (ничего не отправляется): «" .. text .. "»" .. (#flagnames > 0 and (" с флагами " .. table.concat(flagnames, ",")) or ""))
+    say(ctx, "проверка (ничего не отправляется): «" .. text .. "»" .. (#flagnames > 0 and (" с флагами " .. table.concat(flagnames, ",")) or "") .. (sender ~= "viewer" and (", отправитель: " .. sender) or ""))
     for _, t in ipairs(E.cfg.timers) do
         if t.enabled and t.started_at and rules.matches(t, text, mask, me) then
-            say(ctx, string.format("совпал счётчик %s (%s): он срабатывает раньше правил.", N.label(t), rules.describe(t)))
+            if E.is_skipped(t, sender, is_mod) then
+                say(ctx, string.format("счётчик %s (%s): совпал, но отправитель «%s» пропускается — не сработает.", N.label(t), rules.describe(t), sender))
+            else
+                say(ctx, string.format("совпал счётчик %s (%s): он срабатывает раньше правил.", N.label(t), rules.describe(t)))
+            end
         end
     end
     local winner
@@ -916,7 +1063,9 @@ local function cmd_test(ctx, words)
             end
         end
         if #failed == 0 then
-            if not rules.is_usable(r) then
+            if rules.is_usable(r) and E.is_skipped(r, sender, is_mod) then
+                say(ctx, string.format("%s: условия совпали, но отправитель «%s» пропускается — не сработает, проверяются следующие правила.", N.label(r), sender))
+            elseif not rules.is_usable(r) then
                 say(ctx, string.format("%s: условия совпали, но правило выключено или без ответа — не сработает.", N.label(r)))
             elseif winner then
                 say(ctx, string.format("%s: совпало, но выше уже сработает правило %s (побеждает первое совпавшее).", N.label(r), winner))
@@ -940,7 +1089,7 @@ end
 -- /autoreply rule <name|id> [enable|disable|remove|test <text>]
 local function cmd_rule(ctx, words)
     if not words[3] then
-        say(ctx, "использование: /autoreply rule <номер или имя> [enable|disable|remove|channel <канал|all|here>|test <текст>]   (подробнее: /autoreply help names)")
+        say(ctx, "использование: /autoreply rule <номер или имя> [enable|disable|remove|channel <канал|all|here>|skip ...|test <текст>]   (подробнее: /autoreply help names)")
         return
     end
     local rule = N.find(E.cfg.rules, words[3])
@@ -971,10 +1120,12 @@ local function cmd_rule(ctx, words)
         E.set_rule_channels(rule, chans)
         say(ctx, string.format("правило %s теперь действует: %s.", N.label(rule), scope_text(rule)))
         warn_unwatched(ctx, chans)
+    elseif verb == "skip" then
+        handle_skip(ctx, rule, { table.unpack(words, 5) }, "/autoreply rule " .. words[3] .. " skip")
     elseif RULE_OP_DONE[verb] then
         cmd_rule_op(ctx, { words[1], verb, words[3] }, verb)
     else
-        say(ctx, "неизвестное действие «" .. words[4] .. "»: доступны enable, disable, remove, test, channel.")
+        say(ctx, "неизвестное действие «" .. words[4] .. "»: доступны enable, disable, remove, test, channel, skip.")
     end
 end
 

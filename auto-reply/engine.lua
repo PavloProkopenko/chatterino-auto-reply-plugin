@@ -165,8 +165,74 @@ function E.check_reply(reply)
     return true
 end
 
+-- ---------- sender restrictions ----------
+-- spec: {mods = true|false|nil, users = {...}} (see util.parse_skip); nil clears nothing.
+local function apply_skip(item, spec)
+    if not spec then
+        return
+    end
+    item.skip_mods = spec.mods
+    item.skip_users = (spec.users and #spec.users > 0) and spec.users or nil
+end
+
+-- Replaces the whole restriction of a rule/timer. spec = nil resets it (mods follow global).
+function E.set_skip(item, spec)
+    item.skip_mods = nil
+    item.skip_users = nil
+    apply_skip(item, spec)
+    E.save()
+end
+
+-- v: true (mods never trigger), false (mods may trigger), nil (follow the global setting).
+function E.set_skip_mods(item, v)
+    item.skip_mods = v
+    E.save()
+end
+
+-- Returns true when the user was added (false: already listed).
+function E.add_skip_user(item, login)
+    item.skip_users = item.skip_users or {}
+    if util.contains(item.skip_users, login) then
+        return false
+    end
+    item.skip_users[#item.skip_users + 1] = login
+    E.save()
+    return true
+end
+
+-- Returns true when the user was removed (false: not listed).
+function E.remove_skip_user(item, login)
+    local i = item.skip_users and util.contains(item.skip_users, login)
+    if not i then
+        return false
+    end
+    table.remove(item.skip_users, i)
+    if #item.skip_users == 0 then
+        item.skip_users = nil
+    end
+    E.save()
+    return true
+end
+
+-- Effective "moderators don't trigger this": per item setting, else the global one.
+function E.skips_mods(item)
+    if item.skip_mods ~= nil then
+        return item.skip_mods == true
+    end
+    return E.cfg.skip_mods == true
+end
+
+-- True when `sender` must not trigger `item`. is_mod: memoized function () -> boolean,
+-- only called when the item actually restricts moderators.
+function E.is_skipped(item, sender, is_mod)
+    if item.skip_users and util.contains(item.skip_users, sender) then
+        return true
+    end
+    return E.skips_mods(item) and is_mod() or false
+end
+
 -- conditions: list of {type=, match=}; ALL must match for the rule to fire.
-function E.add_rule(conditions, reply, channels, name)
+function E.add_rule(conditions, reply, channels, name, skip)
     if type(conditions) ~= "table" or #conditions == 0 then
         return nil, "в правиле должно быть хотя бы одно условие"
     end
@@ -189,10 +255,12 @@ function E.add_rule(conditions, reply, channels, name)
     local cfg = E.cfg
     local id = cfg.next_rule_id
     cfg.next_rule_id = id + 1
-    cfg.rules[#cfg.rules + 1] = {
+    local rule = {
         id = id, name = name, conditions = conditions, reply = reply,
         enabled = true, channels = channels or {},
     }
+    apply_skip(rule, skip)
+    cfg.rules[#cfg.rules + 1] = rule
     E.save()
     return id
 end
@@ -260,7 +328,7 @@ local function start_counting(t, offset_s)
 end
 
 -- conditions: list of {type=, match=}, ALL must match (same model as rules).
-function E.add_timer(conditions, channel, reply, format, name)
+function E.add_timer(conditions, channel, reply, format, name, skip)
     if type(conditions) ~= "table" or #conditions == 0 then
         return nil, "нужно хотя бы одно условие (слово-триггер)"
     end
@@ -288,6 +356,7 @@ function E.add_timer(conditions, channel, reply, format, name)
         id = cfg.next_timer_id, name = name, conditions = conditions, channel = channel,
         reply = reply, format = format or "smart", on_category = "reset",
     }
+    apply_skip(t, skip)
     cfg.next_timer_id = t.id + 1
     start_counting(t)
     cfg.timers[#cfg.timers + 1] = t
@@ -723,10 +792,20 @@ function E.on_message(chan_name, ch, msg)
         return
     end
 
+    -- moderator badge is read at most once per message, and only if an item needs it
+    local mod_known, mod_value
+    local function is_mod()
+        if not mod_known then
+            mod_known, mod_value = true, rules.has_mod_badge(msg) == true
+        end
+        return mod_value
+    end
+
     -- time counters (explicit commands) take priority over rules
     for _, t in ipairs(E.cfg.timers) do
         if t.enabled and t.started_at and t.channel == chan_name
             and rules.matches(t, text, flags, me)
+            and not E.is_skipped(t, sender, is_mod)
         then
             local rkey = chan_name .. "|t" .. tostring(t.id)
             local last_rule = rule_cd[rkey]
@@ -743,6 +822,7 @@ function E.on_message(chan_name, ch, msg)
         if rules.is_usable(rule)
             and rules.applies_to_channel(rule, chan_name)
             and rules.matches(rule, text, flags, me)
+            and not E.is_skipped(rule, sender, is_mod)
         then
             local rkey = chan_name .. "|" .. tostring(rule.id)
             local last_rule = rule_cd[rkey]
