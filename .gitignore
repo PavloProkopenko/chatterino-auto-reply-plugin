@@ -4,3 +4,6 @@ auto-reply/data/
 
 # Private notes for Claude Code (local only)
 CLAUDE.md
+
+# Tests (in ignore due to data & privacy restrictions)
+auto-reply/tests/
