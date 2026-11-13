@@ -180,6 +180,31 @@ function C.complete(text)
     return out
 end
 
+-- Chatterino replaces the "word under the cursor" with the chosen value. When the
+-- text before the cursor ends with a space, that word is the PREVIOUS word plus the
+-- space (ResizingTextEdit::textUnderCursor), so each value must repeat it, or the
+-- previous word (e.g. "/autoreply") would be overwritten.
+-- text: input up to the cursor; query: event.query. Returns values or nil.
+function C.complete_for_event(text, query)
+    local res = C.complete(text)
+    if not res or #res == 0 then
+        return nil
+    end
+    if text:match("%s$") then
+        local word = query
+        if type(word) ~= "string" or word == "" then
+            word = text:match("(%S+)%s$") or ""
+        end
+        local prefix = word .. " "
+        local out = {}
+        for _, v in ipairs(res) do
+            out[#out + 1] = prefix .. v
+        end
+        return out
+    end
+    return res
+end
+
 function C.handler(event)
     local empty = { values = {}, hide_others = false }
     local ok, res = pcall(function()
@@ -191,7 +216,7 @@ function C.handler(event)
                 text = text:sub(1, byte - 1)
             end
         end
-        return C.complete(text)
+        return C.complete_for_event(text, event.query)
     end)
     if not ok or not res or #res == 0 then
         return empty
