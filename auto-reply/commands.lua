@@ -27,6 +27,7 @@ local TOPICS = {
         lines = {
             "Каналы, в которых работает авто-ответ. add = добавить, remove = убрать, list = показать список. Канал должен быть открыт в окне (сплите).",
             "/autoreply channel add|remove|list <канал>",
+            "Если убрать канал, правила, привязанные только к нему, перестают работать (глобальными они не становятся); вернёте канал, и они заработают снова.",
         },
     },
     {
@@ -45,6 +46,9 @@ local TOPICS = {
             "/autoreply add flag first|highlighted|reply|announcement|sub|cheer <ответ>",
             "Несколько условий сразу: знак + означает И, то есть должны совпасть ВСЕ условия. Пример: add mention + keyword qq Привет!",
             "/autoreply add <условие> + <условие> <ответ>",
+            "Канал правила: по умолчанию правило действует во всех добавленных каналах. Чтобы привязать к каналу(ам), добавьте channel= сразу после add (можно вместе с name=): channel=streamer, channel=a,b, channel=here (канал этого окна), channel=all (все).",
+            "/autoreply add channel=<канал[,канал]|here|all> <условие> <ответ>",
+            "Сменить канал позже: /autoreply rule <номер или имя> channel <канал[,канал]|here|all>. Правила по каналам: /autoreply list [канал].",
             "Важно: ответ работает только когда авто-ответ включён, и правило без текста ответа никогда не срабатывает.",
         },
     },
@@ -223,6 +227,39 @@ local function help(ctx, arg, arg2)
     end
 end
 
+-- Channel scope of a rule: "все каналы" or "#a, #b".
+local function scope_text(r)
+    if type(r.channels) ~= "table" or #r.channels == 0 then
+        return "все каналы"
+    end
+    local out = {}
+    for _, c in ipairs(r.channels) do
+        out[#out + 1] = "#" .. c
+    end
+    return table.concat(out, ", ")
+end
+
+-- A bound rule none of whose channels is watched never fires (and is NOT global).
+local function is_dormant(r)
+    if type(r.channels) ~= "table" or #r.channels == 0 then
+        return false
+    end
+    for _, c in ipairs(r.channels) do
+        if util.contains(E.cfg.channels, c) then
+            return false
+        end
+    end
+    return true
+end
+
+local function warn_unwatched(ctx, chans)
+    for _, c in ipairs(chans) do
+        if not util.contains(E.cfg.channels, c) then
+            say(ctx, "внимание: " .. c .. " нет в списке каналов; добавьте: /autoreply channel add " .. c)
+        end
+    end
+end
+
 local function status(ctx)
     local cfg = E.cfg
     local state
@@ -255,6 +292,13 @@ local function status(ctx)
     say(ctx, string.format("правила: %d (активных %d) | паузы: пользователь %dс, правило %dс, общая %dс | только на стриме: %s",
         #cfg.rules, usable, cfg.per_user_cooldown, cfg.per_rule_cooldown,
         cfg.global_min_gap, cfg.only_when_live and "да" or "нет"))
+    local dormant = 0
+    for _, r in ipairs(cfg.rules) do
+        if is_dormant(r) then dormant = dormant + 1 end
+    end
+    if dormant > 0 then
+        say(ctx, string.format("внимание: правил, привязанных к неотслеживаемым каналам: %d (смотрите /autoreply list)", dormant))
+    end
     if E.active and #cfg.channels == 0 then
         say(ctx, "внимание: каналов нет; добавьте: /autoreply channel add <канал>")
     end
@@ -310,6 +354,12 @@ local function cmd_channel(ctx, words)
         E.save()
         E.sync_hooks()
         say(ctx, "убран " .. name .. ".")
+        for _, r in ipairs(E.cfg.rules) do
+            if is_dormant(r) and util.contains(r.channels, name) then
+                say(ctx, string.format("правило %s привязано к %s и не будет срабатывать, пока канал не добавлен снова (глобальным оно не станет).",
+                    N.label(r), scope_text(r)))
+            end
+        end
     else
         say(ctx, "использование: /autoreply channel add|remove|list <канал>   (подробнее: /autoreply help channel)")
     end
@@ -333,7 +383,7 @@ end
 local NO_ARG = { mention = true }
 
 local function add_usage(ctx)
-    say(ctx, 'использование: /autoreply add <условие> [+ <условие> ...] <ответ>')
+    say(ctx, 'использование: /autoreply add [name=<имя>] [channel=<канал[,канал]|here|all>] <условие> [+ <условие> ...] <ответ>')
     say(ctx, 'условия: keyword|word|anyword|pattern "текст", flag <имя>, mention')
     say(ctx, 'пример: /autoreply add word "привет" Привет, {user}!')
     say(ctx, "подробнее: /autoreply help add (типы: /autoreply help types), или пошагово: /autoreply new")
@@ -345,8 +395,18 @@ local function cmd_add(ctx, words)
         return
     end
     local rest = table.concat(words, " ", 3)
-    local name
-    name, rest = N.split_name_opt(rest)
+    local opts
+    opts, rest = N.split_opts(rest)
+    local name = opts.name
+    local channels
+    if opts.channel ~= nil then
+        local err
+        channels, err = util.parse_channels(opts.channel, ctx.channel:get_name())
+        if not channels then
+            say(ctx, "не удалось добавить правило: " .. err)
+            return
+        end
+    end
     if rest == "" then
         add_usage(ctx)
         return
@@ -383,7 +443,7 @@ local function cmd_add(ctx, words)
         rest = after
     end
     local reply = rest
-    local id, err = E.add_rule(conditions, reply, nil, name)
+    local id, err = E.add_rule(conditions, reply, channels, name)
     if not id then
         say(ctx, "не удалось добавить правило: " .. err)
         say(ctx, "подробнее: /autoreply help add | пошагово: /autoreply new")
@@ -391,6 +451,10 @@ local function cmd_add(ctx, words)
     end
     local added = E.find_rule(id)
     say(ctx, string.format("добавлено правило %s (%s) → %s", N.label(added), rules.describe(added), reply))
+    if channels and #channels > 0 then
+        say(ctx, "действует только в: " .. scope_text(added))
+        warn_unwatched(ctx, channels)
+    end
     U.soft_warnings(ctx, conditions, reply, unquoted)
     U.after_add(ctx, id, conditions)
 end
@@ -402,17 +466,50 @@ local function rule_line(r)
     elseif not rules.is_usable(r) then
         mark = "  (нет ответа)"
     end
-    return string.format("%s [%s] → %s%s", N.label(r), rules.describe(r), r.reply or "(нет ответа)", mark)
+    if is_dormant(r) then
+        mark = mark .. "  (канал не добавлен: не работает)"
+    end
+    local scope = ""
+    if type(r.channels) == "table" and #r.channels > 0 then
+        scope = " {" .. scope_text(r) .. "}"
+    end
+    return string.format("%s [%s]%s → %s%s", N.label(r), rules.describe(r), scope, r.reply or "(нет ответа)", mark)
 end
 
-local function cmd_list(ctx)
+local function cmd_list(ctx, words)
     if #E.cfg.rules == 0 then
         say(ctx, "правил пока нет. Создайте: /autoreply new (пошагово) или /autoreply add ...")
         return
     end
+    local only = words and words[3] and util.norm_channel(words[3])
+    if only == "" then only = nil end
+    local order, groups = {}, {}
     for _, r in ipairs(E.cfg.rules) do
-        say(ctx, rule_line(r))
+        if not only or rules.applies_to_channel(r, only) then
+            local key = (type(r.channels) == "table" and r.channels[1]) or ""
+            if not groups[key] then
+                groups[key] = {}
+                order[#order + 1] = key
+            end
+            local g = groups[key]
+            g[#g + 1] = r
+        end
     end
+    table.sort(order, function(a, b)
+        if a == "" or b == "" then return a == "" and b ~= "" end
+        return a < b
+    end)
+    if #order == 0 then
+        say(ctx, "для канала " .. only .. " правил нет.")
+        return
+    end
+    for _, key in ipairs(order) do
+        say(ctx, key == "" and "— все каналы —" or ("— #" .. key .. " —"))
+        for _, r in ipairs(groups[key]) do
+            say(ctx, rule_line(r))
+        end
+    end
+    say(ctx, "правила по каналу: /autoreply list <канал>; сменить канал правила: /autoreply rule <номер> channel <канал|all|here>")
     say(ctx, "проверка без отправки: /autoreply test <id> <сообщение>")
 end
 
@@ -805,7 +902,7 @@ end
 -- /autoreply rule <name|id> [enable|disable|remove|test <text>]
 local function cmd_rule(ctx, words)
     if not words[3] then
-        say(ctx, "использование: /autoreply rule <номер или имя> [enable|disable|remove|test <текст>]   (подробнее: /autoreply help names)")
+        say(ctx, "использование: /autoreply rule <номер или имя> [enable|disable|remove|channel <канал|all|here>|test <текст>]   (подробнее: /autoreply help names)")
         return
     end
     local rule = N.find(E.cfg.rules, words[3])
@@ -822,10 +919,24 @@ local function cmd_rule(ctx, words)
             nw[#nw + 1] = words[i]
         end
         cmd_test(ctx, nw)
+    elseif verb == "channel" or verb == "channels" then
+        if not words[5] then
+            say(ctx, string.format("правило %s действует: %s. Сменить: /autoreply rule %s channel <канал[,канал]|here|all>",
+                N.label(rule), scope_text(rule), words[3]))
+            return
+        end
+        local chans, err = util.parse_channels(words[5], ctx.channel:get_name())
+        if not chans then
+            say(ctx, "ошибка: " .. err)
+            return
+        end
+        E.set_rule_channels(rule, chans)
+        say(ctx, string.format("правило %s теперь действует: %s.", N.label(rule), scope_text(rule)))
+        warn_unwatched(ctx, chans)
     elseif RULE_OP_DONE[verb] then
         cmd_rule_op(ctx, { words[1], verb, words[3] }, verb)
     else
-        say(ctx, "неизвестное действие «" .. words[4] .. "»: доступны enable, disable, remove, test.")
+        say(ctx, "неизвестное действие «" .. words[4] .. "»: доступны enable, disable, remove, test, channel.")
     end
 end
 
@@ -898,7 +1009,7 @@ function M.handle(ctx)
     elseif sub == "add" then
         cmd_add(ctx, words)
     elseif sub == "list" then
-        cmd_list(ctx)
+        cmd_list(ctx, words)
     elseif sub == "test" then
         cmd_test(ctx, words)
     elseif sub == "rule" then

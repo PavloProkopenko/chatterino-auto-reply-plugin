@@ -197,6 +197,12 @@ function E.add_rule(conditions, reply, channels, name)
     return id
 end
 
+-- chans: list of channel logins; {} = all channels.
+function E.set_rule_channels(rule, chans)
+    rule.channels = chans or {}
+    E.save()
+end
+
 -- key: "rules" | "timers" | "redeems"; new = nil clears the name. Returns ok, err.
 function E.rename(key, item, new)
     if new ~= nil then

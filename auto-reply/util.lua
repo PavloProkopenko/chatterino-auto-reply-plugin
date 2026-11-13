@@ -15,6 +15,39 @@ function M.norm_channel(name)
     return name
 end
 
+-- Parses a channel list: "a,b" | "all" | "here". Returns list, nil or nil, err.
+-- "all" gives {} (global rule); here = login of the channel the command was typed in.
+function M.parse_channels(str, here)
+    str = tostring(str or ""):lower()
+    if str == "" then
+        return nil, "не указан канал (например channel=streamer, channel=a,b, channel=here или channel=all)"
+    end
+    if str == "all" then
+        return {}
+    end
+    local out = {}
+    for raw in (str .. ","):gmatch("([^,]*),") do
+        local tok = raw
+        if tok == "here" then
+            tok = M.norm_channel(here)
+            if tok == "" then
+                return nil, "не удалось определить текущий канал"
+            end
+        else
+            tok = M.norm_channel(tok)
+        end
+        if not tok:match("^[%w_]+$") or #tok > 25 then
+            return nil, "неверное имя канала «" .. tok .. "» (только латинские буквы, цифры и _)"
+        end
+        local dup = false
+        for _, c in ipairs(out) do
+            if c == tok then dup = true end
+        end
+        if not dup then out[#out + 1] = tok end
+    end
+    return out
+end
+
 function M.norm_user(name)
     name = tostring(name or ""):lower()
     name = name:gsub("^@", "")

@@ -28,6 +28,12 @@ Chatterino plugins cannot add windows or settings pages, so everything is config
   /autoreply add mention I'm away, will reply later
   /autoreply on 3h
   ```
+- **Different rules for different channels.** By default a rule works in every added channel. Add `channel=` to limit it (one or several channels, `here` = the current window, `all` = everywhere), or change it later:
+  ```
+  /autoreply add channel=streamer,friend word "!hi" Hello, {user}!
+  /autoreply rule 3 channel streamer
+  /autoreply list streamer
+  ```
 - **Welcome first-time chatters.**
   ```
   /autoreply add flag first Welcome to the chat, @{user}!

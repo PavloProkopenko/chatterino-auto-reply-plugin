@@ -12,7 +12,7 @@ local SUBCOMMANDS = {
 }
 local TIMER_VERBS = { "add", "list", "on", "off", "reset", "set", "remove", "format", "category" }
 local REDEEM_VERBS = { "add", "list", "remove", "enable", "disable", "debug" }
-local RULE_VERBS = { "enable", "disable", "remove", "test" }
+local RULE_VERBS = { "enable", "disable", "remove", "channel", "test" }
 local RENAME_KINDS = { "rule", "timer", "redeem" }
 
 local function set_of(list)
@@ -91,7 +91,7 @@ local function candidates(args)
         if n == 1 then return { "add", "remove", "list" } end
         if n == 2 and prev == "remove" then return cfg.channels end
     elseif sub == "add" then
-        if prev == "add" or prev == "+" then
+        if prev == "add" or prev == "+" or prev:match("^channel=") or prev:match("^name=") then
             return rules.TYPES
         end
         if prev == "flag" and (prev2 == "add" or prev2 == "+") then
@@ -108,6 +108,7 @@ local function candidates(args)
     elseif sub == "rule" then
         if n == 1 then return refs_of(cfg.rules) end
         if n == 2 then return RULE_VERBS end
+        if n == 3 and prev == "channel" then return concat_lists({ "all", "here" }, cfg.channels) end
     elseif sub == "rename" then
         if n == 1 then return RENAME_KINDS end
         if n == 2 and KIND_LIST[prev] then return refs_of(cfg[KIND_LIST[prev]]) end
@@ -162,6 +163,12 @@ function C.complete(text)
         args[#args + 1] = words[i]:lower()
     end
     local list = candidates(args)
+    if args[1] == "add" and current:lower():match("^channel=") then
+        list = {}
+        for _, v in ipairs(concat_lists({ "all", "here" }, E.cfg.channels)) do
+            list[#list + 1] = "channel=" .. v
+        end
+    end
     if not list then return nil end
     local want = current:lower()
     local out = {}

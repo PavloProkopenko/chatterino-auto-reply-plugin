@@ -1,5 +1,6 @@
 -- /autoreply new: step-by-step rule creation in chat. State lives in memory only.
 local rules = require("rules")
+local util = require("util")
 local E = require("engine")
 local U = require("ux")
 
@@ -61,14 +62,21 @@ local function ask_reply(ctx)
     say(ctx, FOOT)
 end
 
+local function ask_channel(ctx)
+    draft.step = "channel"
+    say(ctx, "Для каких каналов правило? Ответьте /autoreply all (все добавленные каналы), /autoreply here (канал этого окна) или список через запятую, например /autoreply streamer,friend")
+    say(ctx, FOOT)
+end
+
 local function ask_confirm(ctx)
     draft.step = "confirm"
     local descr = {}
     for _, c in ipairs(draft.conds) do
         descr[#descr + 1] = rules.describe({ type = c.type, match = c.match })
     end
-    say(ctx, string.format("Правило: [%s] → %s", table.concat(descr, " + "), draft.reply))
-    say(ctx, "То же одной строкой: " .. U.cmd_line(draft.conds, draft.reply))
+    local scope = (draft.channels and #draft.channels > 0) and ("#" .. table.concat(draft.channels, ", #")) or "все каналы"
+    say(ctx, string.format("Правило: [%s] → %s (каналы: %s)", table.concat(descr, " + "), draft.reply, scope))
+    say(ctx, "То же одной строкой: " .. U.cmd_line(draft.conds, draft.reply, draft.channels))
     say(ctx, "/autoreply 1 — сохранить, /autoreply 2 — отменить. " .. FOOT)
 end
 
@@ -103,8 +111,10 @@ local function back(ctx)
         end
     elseif step == "reply" then
         ask_more(ctx)
-    elseif step == "confirm" then
+    elseif step == "channel" then
         ask_reply(ctx)
+    elseif step == "confirm" then
+        ask_channel(ctx)
     end
 end
 
@@ -178,10 +188,18 @@ function W.answer(ctx, words)
             return
         end
         draft.reply = text
+        ask_channel(ctx)
+    elseif step == "channel" then
+        local chans, err = util.parse_channels(first == "" and "all" or text:gsub("%s+", ""), ctx.channel:get_name())
+        if not chans then
+            say(ctx, "ошибка: " .. err)
+            return
+        end
+        draft.channels = chans
         ask_confirm(ctx)
     elseif step == "confirm" then
         if YES[first] or first == "save" then
-            local id, err = E.add_rule(draft.conds, draft.reply)
+            local id, err = E.add_rule(draft.conds, draft.reply, draft.channels)
             if not id then
                 say(ctx, "не удалось добавить правило: " .. err)
                 return
@@ -190,6 +208,11 @@ function W.answer(ctx, words)
             draft = nil
             say(ctx, string.format("добавлено правило #%d (%s) → %s", id,
                 rules.describe(E.find_rule(id)), reply))
+            for _, c in ipairs(E.find_rule(id).channels or {}) do
+                if not util.contains(E.cfg.channels, c) then
+                    say(ctx, "внимание: " .. c .. " нет в списке каналов; добавьте: /autoreply channel add " .. c)
+                end
+            end
             U.soft_warnings(ctx, conds, reply, nil)
             U.after_add(ctx, id, conds)
         elseif NO[first] then

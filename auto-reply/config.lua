@@ -2,6 +2,7 @@
 -- io.open resolve there).
 local json = require("chatterino.json")
 local names = require("names")
+local util = require("util")
 
 local M = {}
 local FILE = "config.json"
@@ -81,6 +82,26 @@ function M.load()
     if type(cfg.mute_lurkers) ~= "boolean" then cfg.mute_lurkers = false end
     if type(cfg.backfire) ~= "boolean" then cfg.backfire = true end
     if type(cfg.redeems) ~= "table" then cfg.redeems = {} end
+    -- rule channel scope: never widen a bound rule to global because of bad data
+    for _, r in ipairs(cfg.rules) do
+        if type(r) == "table" and r.channels ~= nil then
+            local clean = {}
+            if type(r.channels) == "table" then
+                for _, c in ipairs(r.channels) do
+                    c = type(c) == "string" and c:lower():gsub("^#", "") or ""
+                    if c:match("^[%w_]+$") and not util.contains(clean, c) then
+                        clean[#clean + 1] = c
+                    end
+                end
+                if #clean == 0 and #r.channels > 0 then
+                    r.enabled = false
+                end
+            elseif r.channels ~= false then
+                r.enabled = false
+            end
+            r.channels = clean
+        end
+    end
     local goodr = {}
     for _, r in ipairs(cfg.redeems) do
         if type(r) == "table" and type(r.id) == "number" and type(r.channel) == "string"

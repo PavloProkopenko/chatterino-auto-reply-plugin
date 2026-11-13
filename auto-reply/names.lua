@@ -100,4 +100,21 @@ function N.split_name_opt(rest)
     return nil, rest
 end
 
+-- Strips leading "name=<token>" / "channel=<token>" options in any order.
+-- Returns opts ({name=, channel=}; empty string if the value is empty), rest.
+function N.split_opts(rest)
+    local opts = {}
+    while true do
+        local key, val, tail = rest:match("^(%a+)=(%S*)%s*(.*)$")
+        key = key and key:lower()
+        if (key == "name" or key == "channel") and opts[key] == nil then
+            opts[key] = val
+            rest = tail
+        else
+            break
+        end
+    end
+    return opts, rest
+end
+
 return N

@@ -22,7 +22,7 @@ function U.my_login()
 end
 
 -- The one-line command equivalent to a list of conditions + reply.
-function U.cmd_line(conds, reply)
+function U.cmd_line(conds, reply, channels)
     local parts = {}
     for _, c in ipairs(conds) do
         if c.type == "mention" then
@@ -33,7 +33,8 @@ function U.cmd_line(conds, reply)
             parts[#parts + 1] = c.type .. ' "' .. c.match .. '"'
         end
     end
-    return "/autoreply add " .. table.concat(parts, " + ") .. " " .. reply
+    local ch = (channels and #channels > 0) and ("channel=" .. table.concat(channels, ",") .. " ") or ""
+    return "/autoreply add " .. ch .. table.concat(parts, " + ") .. " " .. reply
 end
 
 -- Non-blocking advice about a rule that was just added.
@@ -76,8 +77,12 @@ function U.after_add(ctx, id, conds)
     if not E.active then
         U.say(ctx, "авто-ответ сейчас выключен: включите командой /autoreply on [30m|2h|forever].")
     end
+    local rule0 = E.find_rule(id)
+    local bound = rule0 and type(rule0.channels) == "table" and #rule0.channels > 0
     if #cfg.channels == 0 then
         U.say(ctx, "каналов пока нет: добавьте командой /autoreply channel add <канал>.")
+    elseif bound then
+        U.say(ctx, "правило привязано к: #" .. table.concat(rule0.channels, ", #") .. " (сменить: /autoreply rule " .. id .. " channel <канал|all>).")
     else
         U.say(ctx, string.format("правило действует во всех добавленных каналах (%d).", #cfg.channels))
     end
