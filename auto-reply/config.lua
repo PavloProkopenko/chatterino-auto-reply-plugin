@@ -57,6 +57,19 @@ local function write_all(name, data)
     return true
 end
 
+-- Optional external config folder: scripts/link-config in the web project replace data/
+-- with a symlink/junction and drop this marker file into the target folder. Lua cannot see
+-- links itself (no os/lstat), so the marker is a heuristic.
+local MARKER = ".external"
+function M.is_external()
+    local f = io.open(MARKER, "r")
+    if f then
+        f:close()
+        return true
+    end
+    return false
+end
+
 -- Returns cfg, warning (string or nil).
 function M.load()
     local raw = read_all(FILE)

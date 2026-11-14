@@ -1,5 +1,6 @@
 -- /autoreply subcommands.
 local util = require("util")
+local config = require("config")
 local rules = require("rules")
 local E = require("engine")
 local U = require("ux")
@@ -179,6 +180,15 @@ local TOPICS = {
         },
     },
     {
+        key = "folder", aliases = { "config", "webui" },
+        summary = "хранить настройки в своей папке (для веб-интерфейса)",
+        lines = {
+            "По умолчанию настройки лежат в папке data плагина. Для редактирования через веб-интерфейс можно подключить свою папку: скрипт заменяет data ссылкой на неё (старая папка сохраняется как data.bak). Плагин при этом работает как обычно.",
+            "Скрипты: scripts/link-config.sh (macOS/Linux), scripts/link-config.ps1 (Windows). Закройте приложение перед запуском. Отключить: scripts/unlink-config.",
+            "После правки файла снаружи выполните /autoreply reload. /autoreply status показывает, подключена ли внешняя папка (по метке .external). Если папка недоступна, плагин сообщит об ошибке записи.",
+        },
+    },
+    {
         key = "reload", aliases = {},
         summary = "перечитать data/config.json",
         lines = {
@@ -314,6 +324,9 @@ local function status(ctx)
     say(ctx, string.format("правила: %d (активных %d) | паузы: пользователь %dс, правило %dс, общая %dс | только на стриме: %s",
         #cfg.rules, usable, cfg.per_user_cooldown, cfg.per_rule_cooldown,
         cfg.global_min_gap, cfg.only_when_live and "да" or "нет"))
+    say(ctx, "файл настроек: data/config.json ("
+        .. (config.is_external() and "внешняя папка по ссылке, определено по метке .external" or "стандартная папка плагина")
+        .. ")")
     say(ctx, "модераторы запускают ответы: " .. (cfg.skip_mods and "нет (set skipmods off, чтобы разрешить)" or "да (set skipmods on, чтобы запретить)"))
     local dormant = 0
     for _, r in ipairs(cfg.rules) do

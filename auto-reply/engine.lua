@@ -69,7 +69,15 @@ function E.save()
     else
         cfg.active_until = nil
     end
-    return config.save(cfg)
+    local ok = config.save(cfg)
+    if not ok and not E.warned_save then
+        E.warned_save = true
+        E.notify("не удалось записать data/config.json: настройки не сохранятся после перезапуска. "
+            .. "Если папка data подключена ссылкой на внешнюю папку, проверьте, что она доступна (см. /autoreply help folder).")
+    elseif ok then
+        E.warned_save = false
+    end
+    return ok
 end
 
 function E.is_active()
