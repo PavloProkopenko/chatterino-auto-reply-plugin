@@ -75,13 +75,13 @@ To update, replace the `auto-reply` folder with the new version and click **Relo
 
 > Plugins can run arbitrary code. Install only plugins you trust, and read the source if you are unsure.
 
-### Optional: keep the config in your own folder
+### Optional: keep the plugin in your own folder (for the web editor)
 
-By default the plugin stores `config.json` in its `data/` folder inside the Leafyrino app-data directory. Browsers (and the web editor) cannot open that system folder with write access. If you want to edit the config in the web editor, link `data/` to a folder you choose. Leafyrino follows the link, so the plugin keeps working unchanged.
+Browsers (and the web editor) cannot open Leafyrino's system app-data folder with write access. If you want to edit the config in the web editor, make the plugin folder a link to a folder you choose. Leafyrino follows the link, so the plugin keeps working unchanged, and the web editor can edit `data/config.json` and install or update the plugin files in that folder.
 
 1. Close Leafyrino.
-2. macOS / Linux: `scripts/link-config.sh ~/Documents/auto-reply-config`. Windows (PowerShell, no admin needed, not tested on Windows yet): `powershell -File link-config.ps1 -Target D:\auto-reply-config`. The scripts live in the `auto-reply-web` project.
-3. Start Leafyrino and run `/autoreply status`. It should say the config folder is external (detected by a `.external` marker file).
-4. After editing `config.json` outside the app, run `/autoreply reload`.
+2. Either install the plugin into an empty folder from the web editor and create the link with the command it shows (`ln -s` on macOS/Linux, `mklink /J` on Windows), or run the script from the `auto-reply-web` project: `scripts/link-config.sh ~/Documents/auto-reply-plugin` (macOS/Linux) or `powershell -File link-config.ps1 -Target D:\auto-reply-plugin` (Windows, not tested yet). The script copies your current plugin folder and keeps the original as `<plugin folder>.bak`.
+3. Start Leafyrino and run `/autoreply status`. It should say the config folder is external (detected by a `data/.external` marker file).
+4. After editing `config.json` outside the app, run `/autoreply reload`. After a plugin update, restart Leafyrino.
 
-The old `data/` folder is kept as `data.bak`. To undo, close the app and run `unlink-config.sh <data folder>` (or `unlink-config.ps1 -Data <data folder>`). Details: `/autoreply help folder`.
+To undo, close the app and run `unlink-config.sh <plugin folder>` (or `unlink-config.ps1 -Data <plugin folder>`). Details: `/autoreply help folder`.
