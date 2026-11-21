@@ -1,0 +1,81 @@
+name: Sync plugin to web UI
+
+# When the plugin code changes on main, open a pull request in the web UI repo that
+# updates its vendored copy (vendor/plugin/). Merging that PR redeploys the site, and
+# the "update plugin" button then appears for users on an older version.
+# Nothing is pushed to the web repo's main: a human merges the PR.
+#
+# One-time setup: add a repository secret WEB_REPO_TOKEN in this repo (Settings > Secrets
+# and variables > Actions): a fine-grained token limited to the web repo with
+# Contents: read/write and Pull requests: read/write.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "auto-reply/*.lua"
+      - "auto-reply/info.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-web-ui
+  cancel-in-progress: true
+
+env:
+  WEB_REPO: PavloProkopenko/chatterino-auto-reply-web-ui
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: plugin
+          persist-credentials: false
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ env.WEB_REPO }}
+          path: web
+          token: ${{ secrets.WEB_REPO_TOKEN }}
+      # actions/setup-node v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 22
+      - name: Vendor the plugin into the web repo
+        working-directory: web
+        env:
+          PLUGIN_REPO: ../plugin
+        run: |
+          node scripts/sync-plugin.mjs
+          node scripts/sync-plugin.mjs --check
+      - name: Open or update the pull request
+        working-directory: web
+        env:
+          GH_TOKEN: ${{ secrets.WEB_REPO_TOKEN }}
+          PLUGIN_SHA: ${{ github.sha }}
+        run: |
+          if git diff --quiet -- vendor/plugin; then
+            echo "vendor/plugin is already up to date"
+            exit 0
+          fi
+          version=$(node -p "require('./vendor/plugin/VERSION.json').version")
+          branch="sync-plugin/${version}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add vendor/plugin
+          git commit -m "chore(plugin): vendor plugin ${version}" \
+            -m "Source: ${GITHUB_REPOSITORY}@${PLUGIN_SHA}"
+          git push --force origin "$branch"
+          if gh pr view "$branch" --json state -q .state 2>/dev/null | grep -q OPEN; then
+            echo "pull request for $branch already open, branch updated"
+          else
+            gh pr create --base main --head "$branch" \
+              --title "chore(plugin): vendor plugin ${version}" \
+              --body "Automated sync from ${GITHUB_REPOSITORY}@${PLUGIN_SHA}. Merging redeploys the site and offers plugin ${version} as an update."
+          fi
