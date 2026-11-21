@@ -18,7 +18,7 @@ function M.defaults()
         ignore_users = {},
         per_user_cooldown = 60, -- seconds, per user per channel
         per_rule_cooldown = 10, -- seconds, per rule per channel
-        global_min_gap = 2, -- seconds between any two auto-replies
+        global_min_gap = 1, -- seconds between any two auto-replies
         only_when_live = false,
         skip_mods = false, -- global: moderators don't trigger rules/timers (per item: skip_mods)
         next_rule_id = 1,
@@ -70,14 +70,29 @@ function M.is_external()
     return false
 end
 
--- Returns cfg, warning (string or nil).
+-- Raw text of data/config.json, or nil when missing (used by the file watcher).
+function M.read_raw()
+    return read_all(FILE)
+end
+
+-- Returns cfg, warning (string or nil). Reads the file.
 function M.load()
     local raw = read_all(FILE)
+    local cfg, warn = M.parse(raw, false)
+    return cfg, warn, raw
+end
+
+-- Builds a sanitized cfg from raw text. quiet = watcher mode: corrupt text returns
+-- nil, "error" and never touches config.json.bad.
+function M.parse(raw, quiet)
     if not raw or raw == "" then
         return M.defaults(), nil
     end
     local ok, parsed = pcall(json.parse, raw)
     if not ok or type(parsed) ~= "table" then
+        if quiet then
+            return nil, "config.json не читается (повреждён или записывается): оставлена прежняя конфигурация."
+        end
         write_all(FILE .. ".bad", raw)
         return M.defaults(),
             "config.json was corrupt; saved a copy as config.json.bad and started fresh."
@@ -209,7 +224,7 @@ function M.save(cfg)
         c2.log(c2.LogLevel.Warning, "auto-reply: could not write config.json")
         return false
     end
-    return true
+    return true, out
 end
 
 return M

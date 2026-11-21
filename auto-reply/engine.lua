@@ -7,7 +7,9 @@ local N = require("names")
 local E = {}
 
 local MAX_QUEUE = 10
-local FIRST_DELAY_MS = 800
+local FIRST_DELAY_MS = 50
+local MIN_SEND_GAP_MS = 1100 -- Chatterino's limiter drops faster sends for non-mods
+local WATCH_MS = 3000
 local POLL_MS = 5000
 local INVISIBLE = " \u{E0000}" -- Twitch dup-message bypass
 
@@ -69,7 +71,11 @@ function E.save()
     else
         cfg.active_until = nil
     end
-    local ok = config.save(cfg)
+    local ok, written = config.save(cfg)
+    if ok then
+        E.last_text = written
+        E.live_snap = E.snapshot_live(cfg)
+    end
     if not ok and not E.warned_save then
         E.warned_save = true
         E.notify("не удалось записать data/config.json: настройки не сохранятся после перезапуска. "
@@ -139,8 +145,11 @@ end
 
 -- ---------- config (re)load ----------
 function E.load()
-    local cfg, warn = config.load()
+    local cfg, warn, raw = config.load()
     E.cfg = cfg
+    E.last_text = raw
+    E.bad_text = nil
+    E.live_snap = E.snapshot_live(cfg)
     E.active, E.expires, E.session_only = false, nil, false
     local au = cfg.active_until
     if au == "forever" then
@@ -489,6 +498,84 @@ function E.start_poll()
         c2.later(tick, POLL_MS)
     end
     c2.later(tick, POLL_MS)
+    local function watch()
+        pcall(E.watch_config)
+        c2.later(watch, WATCH_MS)
+    end
+    c2.later(watch, WATCH_MS)
+end
+
+-- ---------- live reload of config.json (web UI edits) ----------
+function E.snapshot_live(cfg)
+    local snap = {}
+    for _, t in ipairs(cfg.timers or {}) do
+        if type(t) == "table" and type(t.id) == "number" then
+            snap[t.id] = { enabled = t.enabled == true, started_at = t.started_at, game_id = t.game_id }
+        end
+    end
+    return snap
+end
+
+local function same_live(a, b)
+    return a and b and a.enabled == b.enabled and a.started_at == b.started_at and a.game_id == b.game_id
+end
+
+-- Adopt a freshly read config. Rules, channels, settings and timer definitions come from the
+-- file. Live state stays with the plugin: on/off, and a timer's enabled/started_at/game_id
+-- unless the file changed them since we last read/wrote it (web start/stop).
+function E.apply_external(newcfg)
+    local old = E.cfg
+    local old_t = {}
+    for _, t in ipairs(old.timers) do
+        old_t[t.id] = t
+    end
+    local prev = E.live_snap or {}
+    for _, t in ipairs(newcfg.timers) do
+        local o = old_t[t.id]
+        if o and same_live(prev[t.id], { enabled = t.enabled == true, started_at = t.started_at, game_id = t.game_id }) then
+            t.enabled, t.started_at, t.game_id = o.enabled, o.started_at, o.game_id
+        end
+    end
+    newcfg.next_rule_id = math.max(newcfg.next_rule_id or 1, old.next_rule_id or 1)
+    newcfg.next_timer_id = math.max(newcfg.next_timer_id or 1, old.next_timer_id or 1)
+    newcfg.next_redeem_id = math.max(newcfg.next_redeem_id or 1, old.next_redeem_id or 1)
+    newcfg.active_until = old.active_until
+    E.cfg = newcfg
+    E.live_snap = E.snapshot_live(newcfg)
+    local wanted = {}
+    for _, name in ipairs(newcfg.channels) do
+        wanted[name] = true
+    end
+    local kept = {}
+    for _, item in ipairs(queue) do
+        if wanted[item.channel] then
+            kept[#kept + 1] = item
+        end
+    end
+    queue = kept
+    E.sync_hooks()
+end
+
+-- Called every few seconds: picks up edits made outside the plugin.
+function E.watch_config()
+    local raw = config.read_raw()
+    if raw == nil or raw == E.last_text then
+        return false
+    end
+    if raw == E.bad_text then
+        return false -- already reported, wait for the next write
+    end
+    local cfg, err = config.parse(raw, true)
+    if not cfg then
+        E.bad_text = raw
+        E.notify(err)
+        return false
+    end
+    E.bad_text = nil
+    E.last_text = raw
+    E.apply_external(cfg)
+    E.notify(string.format("конфиг обновлён из файла (правил: %d, счётчиков: %d).", #cfg.rules, #cfg.timers))
+    return true
 end
 
 -- ---------- sending ----------
@@ -511,10 +598,10 @@ function E.pump()
         queue = {}
         return
     end
-    local gap_ms = E.cfg.global_min_gap * 1000
+    local gap_ms = math.max(E.cfg.global_min_gap * 1000, MIN_SEND_GAP_MS)
     local wait = last_send_ms + gap_ms - util.now_ms()
     if wait > 0 then
-        schedule_pump(wait + 50)
+        schedule_pump(wait)
         return
     end
     local item = table.remove(queue, 1)
@@ -539,7 +626,7 @@ function E.pump()
         last_send_ms = util.now_ms()
     end
     if #queue > 0 then
-        schedule_pump(math.max(gap_ms, 1100))
+        schedule_pump(gap_ms)
     end
 end
 
