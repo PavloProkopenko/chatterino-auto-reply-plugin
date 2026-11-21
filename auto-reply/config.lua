@@ -70,6 +70,17 @@ function M.is_external()
     return false
 end
 
+-- Version the web UI wrote into data/.plugin-update after it replaced the plugin's files
+-- (nil when absent). Differs from util.VERSION until the plugin is restarted.
+function M.read_update_marker()
+    local raw = read_all(".plugin-update")
+    if not raw then
+        return nil
+    end
+    raw = raw:gsub("%s+", "")
+    return raw ~= "" and raw or nil
+end
+
 -- Raw text of data/config.json, or nil when missing (used by the file watcher).
 function M.read_raw()
     return read_all(FILE)

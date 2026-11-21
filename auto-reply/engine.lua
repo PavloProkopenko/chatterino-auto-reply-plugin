@@ -673,8 +673,27 @@ function E.fallback_channel()
     return nil
 end
 
+local RESTART_HINT_EVERY_S = 300
+
+-- Files on disk were replaced by the web UI but this process still runs the old code.
+function E.check_code_update()
+    local marker = config.read_update_marker()
+    if not marker or marker == util.VERSION then
+        return false
+    end
+    local now = util.now_s()
+    if E.restart_hint_at and now - E.restart_hint_at < RESTART_HINT_EVERY_S then
+        return false
+    end
+    E.restart_hint_at = now
+    E.notify(string.format("код плагина обновлён до %s, но работает версия %s. Выключите и снова включите плагин "
+        .. "(Настройки, Плагины) или перезапустите Leafyrino.", marker, util.VERSION), E.fallback_channel())
+    return true
+end
+
 -- Called every few seconds: picks up edits made outside the plugin.
 function E.watch_config()
+    pcall(E.check_code_update)
     local raw = config.read_raw()
     if raw == nil or raw == E.last_text then
         return false
