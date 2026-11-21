@@ -556,6 +556,123 @@ function E.apply_external(newcfg)
     E.sync_hooks()
 end
 
+local function deep_eq(a, b, skip)
+    if type(a) ~= type(b) then
+        return false
+    end
+    if type(a) ~= "table" then
+        return a == b
+    end
+    for k, v in pairs(a) do
+        if not (skip and skip[k]) and not deep_eq(v, b[k], skip) then
+            return false
+        end
+    end
+    for k in pairs(b) do
+        if not (skip and skip[k]) and a[k] == nil then
+            return false
+        end
+    end
+    return true
+end
+
+local LIVE_FIELDS = { enabled = true, started_at = true, game_id = true }
+local SETTING_KEYS = {
+    "channels", "ignore_users", "protect_users", "per_user_cooldown", "per_rule_cooldown",
+    "global_min_gap", "only_when_live", "skip_mods", "mute_lurkers", "backfire",
+}
+
+-- Short Russian summary of what differs between two configs ("" when nothing visible).
+function E.diff_summary(old, new)
+    local parts = {}
+    local function compare(kind_add, kind_rm, list_old, list_new, ignore_live)
+        local by_old, by_new = {}, {}
+        for _, it in ipairs(list_old) do by_old[it.id] = it end
+        for _, it in ipairs(list_new) do by_new[it.id] = it end
+        local added, removed, changed, started, stopped = {}, {}, {}, {}, {}
+        for _, it in ipairs(list_new) do
+            local o = by_old[it.id]
+            if not o then
+                added[#added + 1] = N.label(it)
+            else
+                if ignore_live then
+                    local was, now = o.enabled and o.started_at, it.enabled and it.started_at
+                    if now and not was then started[#started + 1] = N.label(it) end
+                    if was and not now then stopped[#stopped + 1] = N.label(it) end
+                end
+                if not deep_eq(o, it, ignore_live and LIVE_FIELDS or nil) then
+                    changed[#changed + 1] = N.label(it)
+                end
+            end
+        end
+        for _, it in ipairs(list_old) do
+            if not by_new[it.id] then removed[#removed + 1] = N.label(it) end
+        end
+        local function put(prefix, list)
+            if #list > 0 then parts[#parts + 1] = prefix .. " " .. table.concat(list, ", ") end
+        end
+        put(kind_add .. " добавлен(о):", added)
+        put(kind_rm .. " удалён(о):", removed)
+        put(kind_add .. " изменён(о):", changed)
+        put(kind_add .. " запущен:", started)
+        put(kind_add .. " остановлен:", stopped)
+    end
+    compare("правило", "правило", old.rules, new.rules, false)
+    compare("счётчик", "счётчик", old.timers, new.timers, true)
+    compare("награда", "награда", old.redeems, new.redeems, false)
+    local ch = {}
+    for _, k in ipairs(SETTING_KEYS) do
+        if not deep_eq(old[k], new[k]) then ch[#ch + 1] = k end
+    end
+    if #ch > 0 then parts[#parts + 1] = "настройки: " .. table.concat(ch, ", ") end
+    return table.concat(parts, "; ")
+end
+
+-- One-line state for notices: on/off, counts, channels.
+function E.status_line()
+    local cfg = E.cfg
+    local state
+    if not E.active then
+        state = "ВЫКЛ"
+    elseif E.expires then
+        state = "ВКЛ, осталось " .. util.format_duration(E.expires - util.now_s())
+    elseif E.session_only then
+        state = "ВКЛ до закрытия приложения"
+    else
+        state = "ВКЛ (навсегда)"
+    end
+    local usable, running = 0, 0
+    for _, r in ipairs(cfg.rules) do
+        if rules.is_usable(r) then usable = usable + 1 end
+    end
+    for _, t in ipairs(cfg.timers) do
+        if t.enabled and t.started_at then running = running + 1 end
+    end
+    local chans = #cfg.channels > 0 and table.concat(cfg.channels, ", ") or "нет"
+    return string.format("авто-ответ: %s | правил %d (активных %d) | счётчиков %d (работает %d) | каналы: %s",
+        state, #cfg.rules, usable, #cfg.timers, running, chans)
+end
+
+-- Where to print a notice when no command has been used yet: the first open watched channel.
+function E.fallback_channel()
+    if E.notice_channel then
+        local ok, valid = pcall(function() return E.notice_channel:is_valid() end)
+        if ok and valid then
+            return E.notice_channel
+        end
+    end
+    for _, name in ipairs(E.cfg.channels) do
+        local h = handles[name]
+        if h then
+            local ok, valid = pcall(function() return h.channel:is_valid() end)
+            if ok and valid then
+                return h.channel
+            end
+        end
+    end
+    return nil
+end
+
 -- Called every few seconds: picks up edits made outside the plugin.
 function E.watch_config()
     local raw = config.read_raw()
@@ -568,13 +685,19 @@ function E.watch_config()
     local cfg, err = config.parse(raw, true)
     if not cfg then
         E.bad_text = raw
-        E.notify(err)
+        E.notify(err, E.fallback_channel())
         return false
     end
     E.bad_text = nil
     E.last_text = raw
+    local old = E.cfg
     E.apply_external(cfg)
-    E.notify(string.format("конфиг обновлён из файла (правил: %d, счётчиков: %d).", #cfg.rules, #cfg.timers))
+    local summary = E.diff_summary(old, E.cfg)
+    if summary ~= "" then
+        local ch = E.fallback_channel()
+        E.notify("конфиг обновлён из файла: " .. summary, ch)
+        E.notify(E.status_line(), ch)
+    end
     return true
 end
 
