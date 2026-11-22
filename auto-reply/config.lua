@@ -28,12 +28,13 @@ function M.defaults()
         next_timer_id = 1,
         timers = {},
         -- channel-point rewards -> /timeout|/untimeout:
-        -- {id, channel, title, action = timeout|untimeout, seconds, enabled}
+        -- {id, channel, title, action = timeout|untimeout, seconds, enabled, reward_id?}
         next_redeem_id = 1,
         redeems = {},
         protect_users = {}, -- never muted by a redeem (mods, bots, vips)
         mute_lurkers = false, -- false: target must have chatted in the last 2h
         backfire = true, -- protected target -> the redeemer gets the mute
+        helix_enabled = false, -- opt-in Twitch API (rewards via EventSub, user lookup, mods/VIPs)
     }
 end
 
@@ -124,6 +125,11 @@ function M.parse(raw, quiet)
     if type(cfg.backfire) ~= "boolean" then cfg.backfire = true end
     if type(cfg.redeems) ~= "table" then cfg.redeems = {} end
     if type(cfg.skip_mods) ~= "boolean" then cfg.skip_mods = false end
+    if type(cfg.helix_enabled) ~= "boolean" then cfg.helix_enabled = false end
+    -- rule reply mode: "mention" (default, nil) or "thread"; bad data = default
+    for _, r in ipairs(cfg.rules) do
+        if type(r) == "table" and r.reply_mode ~= "thread" then r.reply_mode = nil end
+    end
     -- sender restrictions on rules/timers: bad data = no extra restriction
     local function clean_skip(item)
         if type(item) ~= "table" then return end
@@ -171,6 +177,7 @@ function M.parse(raw, quiet)
             if r.action == "timeout" and not (type(r.seconds) == "number" and r.seconds >= 1 and r.seconds <= 1209600) then
                 r = nil
             end
+            if r and type(r.reward_id) ~= "string" then r.reward_id = nil end
             if r then goodr[#goodr + 1] = r end
         end
     end

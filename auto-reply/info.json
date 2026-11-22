@@ -5,10 +5,11 @@
   "authors": ["w0ntx"],
   "homepage": "",
   "tags": ["auto-reply", "chat", "utility"],
-  "version": "0.7.2",
+  "version": "0.8.0",
   "license": "MIT",
   "permissions": [
     { "type": "FilesystemRead" },
-    { "type": "FilesystemWrite" }
+    { "type": "FilesystemWrite" },
+    { "type": "Network" }
   ]
 }

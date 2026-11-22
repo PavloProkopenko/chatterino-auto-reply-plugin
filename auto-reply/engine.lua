@@ -3,6 +3,7 @@ local util = require("util")
 local config = require("config")
 local rules = require("rules")
 local N = require("names")
+local helix = require("helix")
 
 local E = {}
 
@@ -145,6 +146,7 @@ end
 
 -- ---------- config (re)load ----------
 function E.load()
+    helix.load()
     local cfg, warn, raw = config.load()
     E.cfg = cfg
     E.last_text = raw
@@ -249,7 +251,8 @@ function E.is_skipped(item, sender, is_mod)
 end
 
 -- conditions: list of {type=, match=}; ALL must match for the rule to fire.
-function E.add_rule(conditions, reply, channels, name, skip)
+-- reply_mode: nil/"mention" = plain message, "thread" = Twitch reply to the sender's message.
+function E.add_rule(conditions, reply, channels, name, skip, reply_mode)
     if type(conditions) ~= "table" or #conditions == 0 then
         return nil, "в правиле должно быть хотя бы одно условие"
     end
@@ -275,11 +278,17 @@ function E.add_rule(conditions, reply, channels, name, skip)
     local rule = {
         id = id, name = name, conditions = conditions, reply = reply,
         enabled = true, channels = channels or {},
+        reply_mode = reply_mode == "thread" and "thread" or nil,
     }
     apply_skip(rule, skip)
     cfg.rules[#cfg.rules + 1] = rule
     E.save()
     return id
+end
+
+function E.set_reply_mode(rule, mode)
+    rule.reply_mode = mode == "thread" and "thread" or nil
+    E.save()
 end
 
 -- chans: list of channel logins; {} = all channels.
@@ -495,6 +504,7 @@ function E.start_poll()
     local function tick()
         E.sync_hooks()
         pcall(E.check_timers)
+        pcall(helix.sync_eventsub)
         c2.later(tick, POLL_MS)
     end
     c2.later(tick, POLL_MS)
@@ -579,7 +589,7 @@ end
 local LIVE_FIELDS = { enabled = true, started_at = true, game_id = true }
 local SETTING_KEYS = {
     "channels", "ignore_users", "protect_users", "per_user_cooldown", "per_rule_cooldown",
-    "global_min_gap", "only_when_live", "skip_mods", "mute_lurkers", "backfire",
+    "global_min_gap", "only_when_live", "skip_mods", "mute_lurkers", "backfire", "helix_enabled",
 }
 
 -- Short Russian summary of what differs between two configs ("" when nothing visible).
@@ -763,7 +773,13 @@ function E.pump()
             if dup_flip[item.channel] then
                 text = text .. INVISIBLE
             end
-            ch:send_message(text, false) -- false: never run as a command
+            if item.thread then
+                -- Twitch reply to the sender's latest message (Chatterino's /reply <login> <text>);
+                -- login and text were validated in enqueue()
+                ch:send_message("/reply " .. item.thread .. " " .. text, true)
+            else
+                ch:send_message(text, false) -- false: never run as a command
+            end
         end
         last_send_ms = util.now_ms()
     end
@@ -787,11 +803,18 @@ end
 
 E.render = render -- also used by /autoreply test
 
-local function enqueue(channel, text, command)
+local function enqueue(channel, text, command, thread)
+    if thread then
+        -- text goes through the command parser in thread mode: never let it start a command
+        local first = text:sub(1, 1)
+        if first == "/" or first == "." or not tostring(thread):match("^[%w_]+$") then
+            thread = nil
+        end
+    end
     if #queue >= MAX_QUEUE then
         table.remove(queue, 1)
     end
-    queue[#queue + 1] = { channel = channel, text = text, command = command }
+    queue[#queue + 1] = { channel = channel, text = text, command = command, thread = thread }
     schedule_pump(FIRST_DELAY_MS)
 end
 
@@ -895,7 +918,101 @@ local function debug_dump(ch, msg, flags, title)
     E.notify("redeem debug elements: " .. table.concat(parts, "; "), ch)
 end
 
--- Handles a redemption message. Returns true when it was consumed (matched a
+-- Does `rule` (a redeems[] item) match this reward? title/reward_id may be nil.
+-- A rule bound to a reward id matches by id only (when the event carries one).
+local function redeem_matches(r, chan_name, title, reward_id)
+    if r.enabled == false or r.channel ~= chan_name then
+        return false
+    end
+    if reward_id and r.reward_id then
+        return r.reward_id == reward_id
+    end
+    return title ~= nil and rules.lower(title):find(rules.lower(r.title), 1, true) ~= nil
+end
+
+-- Marks a redemption as handled. Returns false when it was handled before.
+local function first_time(id)
+    if type(id) ~= "string" or id == "" then
+        return true
+    end
+    if done_ids[id] then
+        return false
+    end
+    if done_count > 500 then
+        done_ids, done_count = {}, 0
+    end
+    done_ids[id] = true
+    done_count = done_count + 1
+    return true
+end
+
+-- Last step: the target is known. verified = Twitch confirmed the account exists.
+local function apply_redeem(chan_name, ch, rule, target, sender, me, verified)
+    if rule.action == "untimeout" then
+        enqueue(chan_name, "/untimeout " .. target, true)
+        E.notify(string.format("%s: размут %s.", sender, target), ch)
+        return
+    end
+    local victim = target
+    if is_protected(chan_name, target, me) then
+        if not E.cfg.backfire then
+            E.notify(string.format("%s: мут %s не выполнен: пользователь защищён.", sender, target), ch)
+            return
+        end
+        if is_protected(chan_name, sender, me) then
+            E.notify(string.format("%s: целился в защищённого %s, но сам тоже защищён; ничего не сделано.", sender, target), ch)
+            return
+        end
+        victim = sender
+        E.notify(string.format("%s: целился в защищённого %s, мут получает он сам.", sender, target), ch)
+    elseif not verified and not E.cfg.mute_lurkers then
+        local t = seen[chan_name .. "|" .. target]
+        if not t or util.now_s() - t > SEEN_WINDOW_S then
+            E.notify(string.format("%s: мут %s не выполнен: его не было в чате за последние 2 часа (проверьте ник).", sender, target), ch)
+            return
+        end
+    end
+    enqueue(chan_name, string.format("/timeout %s %d", victim, rule.seconds), true)
+    E.notify(string.format("%s: мут %s на %s.", sender, victim, util.format_duration(rule.seconds)), ch)
+end
+
+-- Shared by the chat path and the EventSub path. input = what the redeemer typed
+-- (chat path: the whole message text, parse_target skips the "Redeemed ... <cost>" part).
+local function run_redeem(chan_name, ch, rule, input, me, sender)
+    if not ch then
+        E.notify(string.format("награда «%s»: канал %s не открыт в окне, действие пропущено.", rule.title, chan_name))
+        return
+    end
+    local okmod, ismod = pcall(function() return ch:is_mod() or ch:is_broadcaster() end)
+    if not okmod or not ismod then
+        if not warned_mod[chan_name] then
+            warned_mod[chan_name] = true
+            E.notify("в " .. chan_name .. " нет прав модератора, награды-модерация не работают.", ch)
+        end
+        return
+    end
+    local target, err = rules.parse_target(input)
+    if not target then
+        E.notify(string.format("%s (%s): не выполнено: %s.", sender, rule.title, err), ch)
+        return
+    end
+    if not helix.ready() then
+        apply_redeem(chan_name, ch, rule, target, sender, me, false)
+        return
+    end
+    helix.get_user(target, function(user, herr)
+        if user then
+            apply_redeem(chan_name, ch, rule, user.login, sender, me, true)
+        elseif herr then
+            E.notify(string.format("не удалось проверить ник %s через Twitch (%s); проверяю по чату.", target, herr), ch)
+            apply_redeem(chan_name, ch, rule, target, sender, me, false)
+        else
+            E.notify(string.format("%s (%s): пользователь «%s» не найден на Twitch, ничего не сделано.", sender, rule.title, target), ch)
+        end
+    end)
+end
+
+-- Handles a redemption chat message. Returns true when it was consumed (matched a
 -- redeem rule), so normal rules must not run on it.
 local function handle_redeem(chan_name, ch, msg, text, me, sender, flags)
     if not has_redeems(chan_name) then
@@ -905,10 +1022,10 @@ local function handle_redeem(chan_name, ch, msg, text, me, sender, flags)
     if E.debug_redeem then
         debug_dump(ch, msg, flags, title)
     end
-    local hay = rules.lower(title or text)
+    local hay = title or text
     local rule
     for _, r in ipairs(E.cfg.redeems) do
-        if r.enabled ~= false and r.channel == chan_name and hay:find(rules.lower(r.title), 1, true) then
+        if redeem_matches(r, chan_name, hay, nil) then
             rule = r
             break
         end
@@ -916,56 +1033,54 @@ local function handle_redeem(chan_name, ch, msg, text, me, sender, flags)
     if not rule then
         return false
     end
-    if msg.id and msg.id ~= "" then
-        if done_ids[msg.id] then
-            return true
-        end
-        if done_count > 500 then
-            done_ids, done_count = {}, 0
-        end
-        done_ids[msg.id] = true
-        done_count = done_count + 1
+    if helix.covers(chan_name) then
+        return true -- the EventSub event does the work (exact reward id and input)
     end
-    local okmod, ismod = pcall(function() return ch:is_mod() or ch:is_broadcaster() end)
-    if not okmod or not ismod then
-        if not warned_mod[chan_name] then
-            warned_mod[chan_name] = true
-            E.notify("в " .. chan_name .. " нет прав модератора, награды-модерация не работают.", ch)
-        end
+    if not first_time(msg.id) then
         return true
     end
-    local target, err = rules.parse_target(text)
-    if not target then
-        E.notify(string.format("%s (%s): не выполнено: %s.", sender, rule.title, err), ch)
-        return true
-    end
-    if rule.action == "untimeout" then
-        enqueue(chan_name, "/untimeout " .. target, true)
-        E.notify(string.format("%s: размут %s.", sender, target), ch)
-        return true
-    end
-    local victim = target
-    if is_protected(chan_name, target, me) then
-        if not E.cfg.backfire then
-            E.notify(string.format("%s: мут %s не выполнен: пользователь защищён.", sender, target), ch)
-            return true
-        end
-        if is_protected(chan_name, sender, me) then
-            E.notify(string.format("%s: целился в защищённого %s, но сам тоже защищён; ничего не сделано.", sender, target), ch)
-            return true
-        end
-        victim = sender
-        E.notify(string.format("%s: целился в защищённого %s, мут получает он сам.", sender, target), ch)
-    elseif not E.cfg.mute_lurkers then
-        local t = seen[chan_name .. "|" .. target]
-        if not t or util.now_s() - t > SEEN_WINDOW_S then
-            E.notify(string.format("%s: мут %s не выполнен: его не было в чате за последние 2 часа (проверьте ник).", sender, target), ch)
-            return true
-        end
-    end
-    enqueue(chan_name, string.format("/timeout %s %d", victim, rule.seconds), true)
-    E.notify(string.format("%s: мут %s на %s.", sender, victim, util.format_duration(rule.seconds)), ch)
+    run_redeem(chan_name, ch, rule, text, me, sender)
     return true
+end
+
+-- Redemption event from Twitch EventSub: {id, channel, reward_id, title, user_input, user_login}.
+function E.on_redemption(evt)
+    local chan_name = util.norm_channel(evt.channel or "")
+    if not has_redeems(chan_name) then
+        return
+    end
+    if E.debug_redeem then
+        E.notify(string.format("redeem debug (EventSub): reward=[%s] id=%s input=[%s] user=%s",
+            tostring(evt.title), tostring(evt.reward_id), tostring(evt.user_input), tostring(evt.user_login)),
+            handles[chan_name] and handles[chan_name].channel or nil)
+    end
+    local rule
+    for _, r in ipairs(E.cfg.redeems) do
+        if redeem_matches(r, chan_name, evt.title, evt.reward_id) then
+            rule = r
+            break
+        end
+    end
+    if not rule or not E.is_active() or not first_time(evt.id) then
+        return
+    end
+    -- remember the exact reward the first time its full title matches
+    if evt.reward_id and not rule.reward_id and evt.title
+        and rules.lower(evt.title) == rules.lower(rule.title) then
+        rule.reward_id = evt.reward_id
+        E.save()
+    end
+    local acct = c2.current_account()
+    if not acct or not acct:is_valid() or acct:is_anon() then
+        return
+    end
+    local me = util.norm_user(acct:login())
+    local sender = util.norm_user(evt.user_login)
+    if sender == "" or sender == me or util.contains(E.cfg.ignore_users, sender) then
+        return
+    end
+    local h = handles[chan_name]
+    run_redeem(chan_name, h and h.channel or nil, rule, evt.user_input or "", me, sender)
 end
 
 -- ---------- incoming ----------
@@ -1066,11 +1181,27 @@ function E.on_message(chan_name, ch, msg)
             if not (last_rule and now - last_rule < E.cfg.per_rule_cooldown) then
                 user_cd[ukey] = now
                 rule_cd[rkey] = now
-                enqueue(chan_name, render(rule.reply, msg))
+                enqueue(chan_name, render(rule.reply, msg), false,
+                    rule.reply_mode == "thread" and sender or nil)
             end
             return -- first matching rule wins
         end
     end
+end
+
+-- Helix wiring
+helix.notify = function(text) E.notify(text, E.fallback_channel()) end
+helix.enabled = function() return E.cfg.helix_enabled == true end
+helix.on_redemption = function(evt) E.on_redemption(evt) end
+helix.wanted = function()
+    local out, seen_ch = {}, {}
+    for _, r in ipairs(E.cfg.redeems) do
+        if r.enabled ~= false and not seen_ch[r.channel] then
+            seen_ch[r.channel] = true
+            out[#out + 1] = r.channel
+        end
+    end
+    return out
 end
 
 return E

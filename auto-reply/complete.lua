@@ -8,11 +8,13 @@ local C = {}
 local SUBCOMMANDS = {
     "on", "off", "toggle", "status", "channel", "add", "new", "list", "test", "remove",
     "enable", "disable", "timer", "ignore", "redeem", "protect", "set", "reload", "help",
-    "cancel", "back", "rule", "rename",
+    "cancel", "back", "rule", "rename", "helix",
 }
 local TIMER_VERBS = { "add", "list", "on", "off", "reset", "set", "remove", "format", "category", "skip" }
 local REDEEM_VERBS = { "add", "list", "remove", "enable", "disable", "debug" }
-local RULE_VERBS = { "enable", "disable", "remove", "channel", "skip", "test" }
+local RULE_VERBS = { "enable", "disable", "remove", "channel", "skip", "mode", "test" }
+local MODES = { "mention", "thread" }
+local HELIX_VERBS = { "status", "on", "off", "login", "logout", "clientid" }
 local SKIP_VERBS = { "mods", "nomods", "add", "remove", "none" }
 local RENAME_KINDS = { "rule", "timer", "redeem" }
 
@@ -94,7 +96,7 @@ local function candidates(args)
         if n == 1 then return { "add", "remove", "list" } end
         if n == 2 and prev == "remove" then return cfg.channels end
     elseif sub == "add" then
-        if prev == "add" or prev == "+" or prev:match("^channel=") or prev:match("^name=") or prev:match("^skip=") then
+        if prev == "add" or prev == "+" or prev:match("^channel=") or prev:match("^name=") or prev:match("^skip=") or prev:match("^mode=") then
             return rules.TYPES
         end
         if prev == "flag" and (prev2 == "add" or prev2 == "+") then
@@ -113,6 +115,7 @@ local function candidates(args)
         if n == 2 then return RULE_VERBS end
         if n == 3 and prev == "channel" then return concat_lists({ "all", "here" }, cfg.channels) end
         if n == 3 and prev == "skip" then return SKIP_VERBS end
+        if n == 3 and prev == "mode" then return MODES end
         if n == 4 and prev == "remove" and args[3] == "skip" then
             local r = N_find(cfg.rules, args[2])
             return r and r.skip_users or nil
@@ -138,8 +141,11 @@ local function candidates(args)
         if n == 3 and (args[2] == "format" or prev == "format") then return { "smart", "full" } end
         if n == 3 and (args[2] == "category" or prev == "category") then return { "reset", "stop", "off" } end
     elseif sub == "ignore" then
-        if n == 1 then return { "add", "remove", "list" } end
+        if n == 1 then return { "add", "remove", "list", "fetch" } end
         if n == 2 and prev == "remove" then return cfg.ignore_users end
+        if args[2] == "fetch" then return { "mods", "vips", "all", "preview" } end
+    elseif sub == "helix" then
+        if n == 1 then return HELIX_VERBS end
     elseif sub == "protect" then
         if n == 1 then return { "add", "remove", "list" } end
         if n == 2 and prev == "remove" then return cfg.protect_users end
@@ -152,8 +158,8 @@ local function candidates(args)
         end
         if n == 2 and prev == "debug" then return ON_OFF end
     elseif sub == "set" then
-        if n == 1 then return { "usercd", "rulecd", "gap", "live", "skipmods", "mutelurkers", "backfire" } end
-        if n == 2 and (prev == "live" or prev == "skipmods" or prev == "mutelurkers" or prev == "backfire") then
+        if n == 1 then return { "usercd", "rulecd", "gap", "live", "skipmods", "mutelurkers", "backfire", "helix" } end
+        if n == 2 and (prev == "live" or prev == "skipmods" or prev == "mutelurkers" or prev == "backfire" or prev == "helix") then
             return ON_OFF
         end
     end
@@ -184,6 +190,9 @@ function C.complete(text)
     local list = candidates(args)
     if (args[1] == "add" or (args[1] == "timer" and args[2] == "add")) and current:lower():match("^skip=") then
         list = { "skip=mods", "skip=nomods" }
+    end
+    if args[1] == "add" and current:lower():match("^mode=") then
+        list = { "mode=mention", "mode=thread" }
     end
     if args[1] == "add" and current:lower():match("^channel=") then
         list = {}

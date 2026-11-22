@@ -22,7 +22,7 @@ function U.my_login()
 end
 
 -- The one-line command equivalent to a list of conditions + reply.
-function U.cmd_line(conds, reply, channels)
+function U.cmd_line(conds, reply, channels, reply_mode)
     local parts = {}
     for _, c in ipairs(conds) do
         if c.type == "mention" then
@@ -34,7 +34,8 @@ function U.cmd_line(conds, reply, channels)
         end
     end
     local ch = (channels and #channels > 0) and ("channel=" .. table.concat(channels, ",") .. " ") or ""
-    return "/autoreply add " .. ch .. table.concat(parts, " + ") .. " " .. reply
+    local mode = reply_mode == "thread" and "mode=thread " or ""
+    return "/autoreply add " .. ch .. mode .. table.concat(parts, " + ") .. " " .. reply
 end
 
 -- Non-blocking advice about a rule that was just added.

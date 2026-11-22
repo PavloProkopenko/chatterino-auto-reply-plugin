@@ -62,6 +62,12 @@ local function ask_reply(ctx)
     say(ctx, FOOT)
 end
 
+local function ask_mode(ctx)
+    draft.step = "mode"
+    say(ctx, "Как отправить ответ? /autoreply 1 — обычное сообщение (упоминание делаете сами через @{user}), /autoreply 2 — ответ-ветка (Reply) на сообщение написавшего.")
+    say(ctx, FOOT)
+end
+
 local function ask_channel(ctx)
     draft.step = "channel"
     say(ctx, "Для каких каналов правило? Ответьте /autoreply all (все добавленные каналы), /autoreply here (канал этого окна) или список через запятую, например /autoreply streamer,friend")
@@ -75,8 +81,9 @@ local function ask_confirm(ctx)
         descr[#descr + 1] = rules.describe({ type = c.type, match = c.match })
     end
     local scope = (draft.channels and #draft.channels > 0) and ("#" .. table.concat(draft.channels, ", #")) or "все каналы"
-    say(ctx, string.format("Правило: [%s] → %s (каналы: %s)", table.concat(descr, " + "), draft.reply, scope))
-    say(ctx, "То же одной строкой: " .. U.cmd_line(draft.conds, draft.reply, draft.channels))
+    say(ctx, string.format("Правило: [%s] → %s (каналы: %s; ответ: %s)", table.concat(descr, " + "), draft.reply, scope,
+        draft.reply_mode == "thread" and "веткой на сообщение" or "обычным сообщением"))
+    say(ctx, "То же одной строкой: " .. U.cmd_line(draft.conds, draft.reply, draft.channels, draft.reply_mode))
     say(ctx, "/autoreply 1 — сохранить, /autoreply 2 — отменить. " .. FOOT)
 end
 
@@ -111,8 +118,10 @@ local function back(ctx)
         end
     elseif step == "reply" then
         ask_more(ctx)
-    elseif step == "channel" then
+    elseif step == "mode" then
         ask_reply(ctx)
+    elseif step == "channel" then
+        ask_mode(ctx)
     elseif step == "confirm" then
         ask_channel(ctx)
     end
@@ -188,6 +197,16 @@ function W.answer(ctx, words)
             return
         end
         draft.reply = text
+        ask_mode(ctx)
+    elseif step == "mode" then
+        if YES[first] or first == "mention" then
+            draft.reply_mode = nil
+        elseif NO[first] or first == "thread" or first == "reply" then
+            draft.reply_mode = "thread"
+        else
+            say(ctx, "ответьте /autoreply 1 (обычное сообщение) или /autoreply 2 (ответ-ветка).")
+            return
+        end
         ask_channel(ctx)
     elseif step == "channel" then
         local chans, err = util.parse_channels(first == "" and "all" or text:gsub("%s+", ""), ctx.channel:get_name())
@@ -199,7 +218,7 @@ function W.answer(ctx, words)
         ask_confirm(ctx)
     elseif step == "confirm" then
         if YES[first] or first == "save" then
-            local id, err = E.add_rule(draft.conds, draft.reply, draft.channels)
+            local id, err = E.add_rule(draft.conds, draft.reply, draft.channels, nil, nil, draft.reply_mode)
             if not id then
                 say(ctx, "не удалось добавить правило: " .. err)
                 return

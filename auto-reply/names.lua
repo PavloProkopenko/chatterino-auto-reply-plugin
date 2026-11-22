@@ -100,11 +100,11 @@ function N.split_name_opt(rest)
     return nil, rest
 end
 
-local DEFAULT_OPT_KEYS = { name = true, channel = true, skip = true }
+local DEFAULT_OPT_KEYS = { name = true, channel = true, skip = true, mode = true }
 
--- Strips leading "name=<token>" / "channel=<token>" / "skip=<token>" options in any order.
--- keys: optional set of accepted option names (default: all three).
--- Returns opts ({name=, channel=, skip=}; empty string if the value is empty), rest.
+-- Strips leading "name=<token>" / "channel=<token>" / "skip=<token>" / "mode=<token>" options in any order.
+-- keys: optional set of accepted option names (default: all four).
+-- Returns opts ({name=, channel=, skip=, mode=}; empty string if the value is empty), rest.
 function N.split_opts(rest, keys)
     keys = keys or DEFAULT_OPT_KEYS
     local opts = {}

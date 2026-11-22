@@ -3,7 +3,7 @@ local M = {}
 
 -- Running code version. Must equal "version" in info.json (checked by tests/cases/commands.lua);
 -- the plugin cannot read info.json (io is limited to data/), so it is repeated here.
-M.VERSION = "0.7.2"
+M.VERSION = "0.8.0"
 
 function M.now_s()
     return c2.DateTime.current_utc():to_unix_seconds()

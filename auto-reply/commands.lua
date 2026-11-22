@@ -6,6 +6,7 @@ local E = require("engine")
 local U = require("ux")
 local W = require("wizard")
 local N = require("names")
+local helix = require("helix")
 
 local M = {}
 
@@ -46,6 +47,8 @@ local TOPICS = {
             "Правило по типу сообщения: first = первое сообщение зрителя, highlighted = выделенное, reply = ответ на сообщение, announcement = объявление, sub = подписка, cheer = биты.",
             "/autoreply add flag first|highlighted|reply|announcement|sub|cheer <ответ>",
             "Несколько условий сразу: знак + означает И, то есть должны совпасть ВСЕ условия. Пример: add mention + keyword qq Привет!",
+            "Как отправлять ответ: mode=mention (по умолчанию) обычное сообщение, в начале которого вы сами пишете @{user}; mode=thread ответ-ветка (Reply) на сообщение написавшего. Ветка отправляется командой /reply на последнее сообщение этого зрителя в чате (API не позволяет указать сообщение точнее). Сменить у готового правила: rule <номер или имя> mode mention|thread.",
+            "/autoreply add mode=thread word \"привет\" Привет!   |   /autoreply rule <id> mode mention|thread",
             "/autoreply add <условие> + <условие> <ответ>",
             "Канал правила: по умолчанию правило действует во всех добавленных каналах. Чтобы привязать к каналу(ам), добавьте channel= сразу после add (можно вместе с name=): channel=streamer, channel=a,b, channel=here (канал этого окна), channel=all (все).",
             "/autoreply add channel=<канал[,канал]|here|all> <условие> <ответ>",
@@ -129,6 +132,8 @@ local TOPICS = {
         lines = {
             "Игнор-список: сообщения этих пользователей не вызывают ответ (например, другие боты вроде Nightbot). Ваш собственный аккаунт игнорируется всегда.",
             "/autoreply ignore add|remove|list <пользователь>",
+            "С включённым Twitch API (help helix) список модераторов и VIP канала можно загрузить сам: fetch добавит их в игнор-список (preview только покажет, ничего не меняя). Команда выполняется в окне нужного канала.",
+            "/autoreply ignore fetch [mods|vips|all] [preview]",
         },
     },
     {
@@ -175,8 +180,21 @@ local TOPICS = {
             "/autoreply protect add|remove|list <пользователь>",
             "mutelurkers: off = мутить можно только тех, кто писал в чат за последние 2 часа (защита от опечаток), on = мутить можно любого. backfire: on = защищённый ник возвращает мут автору (по умолчанию), off = просто отказ.",
             "/autoreply set mutelurkers on|off  |  /autoreply set backfire on|off",
+            "Если Chatterino не показывает название награды, включите Twitch API (help helix): тогда награды приходят напрямую от Twitch (EventSub) с точным названием и введённым текстом, а ник проверяется на существование (не найден: сообщение в чат-окне, мут не выполняется). Работает для каналов, чей владелец выполнил helix login.",
             "Награде можно дать имя и управлять ею по имени вместо номера (см. help names).",
             '/autoreply redeem add name=mute1 timeout "<название награды>" 10m   затем: /autoreply redeem mute1 disable',
+        },
+    },
+    {
+        key = "helix", aliases = { "twitch", "api" },
+        summary = "Twitch API (необязательно): награды, проверка ников, модераторы и VIP",
+        lines = {
+            "Twitch API включается вручную и нужен для: 1) наград (авто-мут по баллам) без чтения чата, 2) проверки, что ник существует, 3) загрузки списка модераторов и VIP в игнор-список. Без него плагин работает как раньше и ничего не отправляет в сеть.",
+            "Подготовка (один раз): зарегистрируйте приложение на dev.twitch.tv/console (тип клиента: Public), возьмите Client ID и сохраните его. Вход идёт по коду: плагин покажет адрес и код, вы подтверждаете в браузере.",
+            "/autoreply helix clientid <Client ID>  затем  /autoreply set helix on  затем  /autoreply helix login",
+            "Токен хранится в data/helix.json (отдельно от config.json) и в чат не выводится. Входить нужно аккаунтом стримера, чьи награды и списки нужны (для модераторов и VIP подходит и аккаунт модератора канала, если Twitch разрешит). Права запрашиваются только на чтение: награды, модераторы, VIP.",
+            "Выйти и отозвать токен: /autoreply helix logout. Состояние: /autoreply helix status.",
+            "/autoreply helix status|on|off|login|logout|clientid <id>",
         },
     },
     {
@@ -218,6 +236,7 @@ local function help_index(ctx)
     out:add_system_message("Проверка без отправки: /autoreply test <id> <сообщение>")
     out:add_system_message("Правила: /autoreply list | remove <id> | enable <id> | disable <id>")
     out:add_system_message("Состояние: /autoreply on [30m|2h|forever] | off | status")
+    out:add_system_message("Twitch API (награды, модераторы/VIP в игнор): /autoreply help helix. Ответ веткой: add mode=thread ... (help add).")
     out:add_system_message("Имена вместо номеров: /autoreply rename rule <номер> <имя>, затем /autoreply disable <имя> (help names).")
     out:add_system_message("Подсказка по вводу: нажмите Tab после /autoreply, подставятся команды и варианты.")
     local keys = {}
@@ -324,6 +343,7 @@ local function status(ctx)
     say(ctx, string.format("правила: %d (активных %d) | паузы: пользователь %dс, правило %dс, общая %dс | только на стриме: %s",
         #cfg.rules, usable, cfg.per_user_cooldown, cfg.per_rule_cooldown,
         cfg.global_min_gap, cfg.only_when_live and "да" or "нет"))
+    say(ctx, "Twitch API: " .. helix.status_text())
     say(ctx, "файл настроек: data/config.json ("
         .. (config.is_external() and "внешняя папка по ссылке, определено по метке .external" or "стандартная папка плагина")
         .. "), автообновление из файла: вкл (каждые ~3 с)")
@@ -485,7 +505,7 @@ local function handle_skip(ctx, item, args, cmdline)
 end
 
 local function add_usage(ctx)
-    say(ctx, 'использование: /autoreply add [name=<имя>] [channel=<канал[,канал]|here|all>] [skip=<mods|nomods|ник,ник>] <условие> [+ <условие> ...] <ответ>')
+    say(ctx, 'использование: /autoreply add [name=<имя>] [channel=<канал[,канал]|here|all>] [skip=<mods|nomods|ник,ник>] [mode=<mention|thread>] <условие> [+ <условие> ...] <ответ>')
     say(ctx, 'условия: keyword|word|anyword|pattern "текст", flag <имя>, mention')
     say(ctx, 'пример: /autoreply add word "привет" Привет, {user}!')
     say(ctx, "подробнее: /autoreply help add (типы: /autoreply help types), или пошагово: /autoreply new")
@@ -529,6 +549,17 @@ local function parse_conditions(ctx, rest)
     return conditions, rest, unquoted
 end
 
+-- "thread" | "mention" (alias words accepted). Returns mode ("thread" or nil for mention), err.
+local function parse_mode(v)
+    v = tostring(v or ""):lower()
+    if v == "thread" or v == "reply" then
+        return "thread"
+    elseif v == "mention" or v == "plain" or v == "message" then
+        return nil
+    end
+    return nil, "mode: thread (ответ в ветке на сообщение) или mention (обычное сообщение с упоминанием)"
+end
+
 local function cmd_add(ctx, words)
     if not words[3] then
         add_usage(ctx)
@@ -556,6 +587,15 @@ local function cmd_add(ctx, words)
             return
         end
     end
+    local reply_mode
+    if opts.mode ~= nil then
+        local err
+        reply_mode, err = parse_mode(opts.mode)
+        if err then
+            say(ctx, "не удалось добавить правило: " .. err)
+            return
+        end
+    end
     if rest == "" then
         add_usage(ctx)
         return
@@ -566,7 +606,7 @@ local function cmd_add(ctx, words)
         return
     end
     local reply = rest
-    local id, err = E.add_rule(conditions, reply, channels, name, skip)
+    local id, err = E.add_rule(conditions, reply, channels, name, skip, reply_mode)
     if not id then
         say(ctx, "не удалось добавить правило: " .. err)
         say(ctx, "подробнее: /autoreply help add | пошагово: /autoreply new")
@@ -576,6 +616,9 @@ local function cmd_add(ctx, words)
     say(ctx, string.format("добавлено правило %s (%s) → %s", N.label(added), rules.describe(added), reply))
     if skip then
         say(ctx, skip_status(added))
+    end
+    if reply_mode == "thread" then
+        say(ctx, "ответ будет ветвью (Reply) на сообщение написавшего; сменить: /autoreply rule " .. id .. " mode mention|thread")
     end
     if channels and #channels > 0 then
         say(ctx, "действует только в: " .. scope_text(added))
@@ -602,6 +645,9 @@ local function rule_line(r)
     local st = skip_text(r)
     if st ~= "" then
         mark = mark .. "  (" .. st .. ")"
+    end
+    if r.reply_mode == "thread" then
+        mark = mark .. "  (ответом на сообщение)"
     end
     return string.format("%s [%s]%s → %s%s", N.label(r), rules.describe(r), scope, r.reply or "(нет ответа)", mark)
 end
@@ -664,10 +710,101 @@ local function cmd_rule_op(ctx, words, op)
     say(ctx, string.format("правило %s %s.", N.label(rule), RULE_OP_DONE[op]))
 end
 
+-- ignore fetch [mods|vips|all] [preview]: pull moderators/VIPs of this channel via Twitch API.
+local function cmd_ignore_fetch(ctx, words)
+    local kind, preview = "all", false
+    for i = 4, #words do
+        local w = words[i]:lower()
+        if w == "mods" or w == "vips" or w == "all" then
+            kind = w
+        elseif w == "preview" then
+            preview = true
+        else
+            say(ctx, "использование: /autoreply ignore fetch [mods|vips|all] [preview]")
+            return
+        end
+    end
+    if not helix.ready() then
+        say(ctx, "нужен Twitch API: /autoreply set helix on, затем /autoreply helix login (см. /autoreply help helix).")
+        return
+    end
+    local okid, id = pcall(function() return ctx.channel:get_twitch_id() end)
+    if not okid or type(id) ~= "string" or id == "" then
+        say(ctx, "не удалось определить канал Twitch: выполните команду в окне канала Twitch.")
+        return
+    end
+    local me = U.my_login()
+    local found = {} -- login -> true, in order
+    local order = {}
+    local counts = {}
+    local errors = {}
+    local function take(label, list, err)
+        if list then
+            counts[#counts + 1] = string.format("%s: %d", label, #list)
+            for _, l in ipairs(list) do
+                if not found[l] then
+                    found[l] = true
+                    order[#order + 1] = l
+                end
+            end
+        else
+            errors[#errors + 1] = label .. ": " .. tostring(err)
+        end
+    end
+    local function finish()
+        for _, e in ipairs(errors) do
+            say(ctx, "не удалось получить список (" .. e .. ")")
+        end
+        if #order == 0 then
+            return
+        end
+        table.sort(order)
+        local new = {}
+        local ignored = E.cfg.ignore_users
+        for _, l in ipairs(order) do
+            if l ~= me and not util.contains(ignored, l) then
+                new[#new + 1] = l
+            end
+        end
+        say(ctx, "найдено (" .. table.concat(counts, ", ") .. "): " .. table.concat(order, ", "))
+        if preview then
+            say(ctx, string.format("новых для игнор-списка: %d. Добавить: /autoreply ignore fetch %s", #new, kind))
+            return
+        end
+        for _, l in ipairs(new) do
+            ignored[#ignored + 1] = l
+        end
+        if #new > 0 then
+            E.save()
+        end
+        say(ctx, string.format("в игнор-список добавлено: %d (уже были или это вы: %d). Список: /autoreply ignore list", #new, #order - #new))
+    end
+    local function do_vips()
+        if kind == "mods" then
+            finish()
+            return
+        end
+        helix.get_vips(id, function(list, err)
+            take("VIP", list, err)
+            finish()
+        end)
+    end
+    if kind == "vips" then
+        do_vips()
+    else
+        helix.get_mods(id, function(list, err)
+            take("модераторы", list, err)
+            do_vips()
+        end)
+    end
+end
+
 local function cmd_ignore(ctx, words)
     local sub, user = words[3], util.norm_user(words[4])
     local list = E.cfg.ignore_users
-    if sub == "list" then
+    if sub == "fetch" then
+        cmd_ignore_fetch(ctx, words)
+    elseif sub == "list" then
         say(ctx, "игнорируются: " .. (#list > 0 and table.concat(list, ", ") or "никто"))
     elseif sub == "add" and user ~= "" then
         if not util.contains(list, user) then
@@ -685,7 +822,42 @@ local function cmd_ignore(ctx, words)
             say(ctx, user .. " не был в списке игнорируемых.")
         end
     else
-        say(ctx, "использование: /autoreply ignore add|remove|list <пользователь>   (подробнее: /autoreply help ignore)")
+        say(ctx, "использование: /autoreply ignore add|remove|list <пользователь>  |  ignore fetch [mods|vips|all] [preview]   (подробнее: /autoreply help ignore)")
+    end
+end
+
+-- /autoreply helix [status|on|off|login|logout|clientid <id>]
+local function cmd_helix(ctx, words)
+    local sub = words[3] and words[3]:lower() or "status"
+    local function resync()
+        pcall(helix.sync_eventsub)
+    end
+    if sub == "status" then
+        say(ctx, "Twitch API: " .. helix.status_text())
+        say(ctx, "подробнее: /autoreply help helix")
+    elseif sub == "on" or sub == "off" then
+        E.cfg.helix_enabled = (sub == "on")
+        E.save()
+        say(ctx, "Twitch API: " .. (sub == "on" and "включён" or "выключен"))
+        if sub == "on" and not helix.logged_in() then
+            say(ctx, "теперь войдите: /autoreply helix login")
+        end
+        resync()
+    elseif sub == "login" then
+        helix.login(function(t) say(ctx, t) end)
+    elseif sub == "logout" then
+        helix.logout()
+        say(ctx, "вышел: токен удалён (и отозван на стороне Twitch).")
+    elseif sub == "clientid" then
+        if not words[4] then
+            say(ctx, "использование: /autoreply helix clientid <Client ID вашего приложения Twitch>")
+        elseif helix.set_client_id(words[4]) then
+            say(ctx, "Client ID сохранён в data/helix.json. Дальше: /autoreply helix login")
+        else
+            say(ctx, "похоже, это не Client ID (латинские буквы и цифры, не короче 10 знаков).")
+        end
+    else
+        say(ctx, "использование: /autoreply helix status|on|off|login|logout|clientid <id>   (подробнее: /autoreply help helix)")
     end
 end
 
@@ -842,12 +1014,14 @@ local function cmd_set(ctx, words)
         E.cfg.skip_mods = (val == "on")
         E.save()
         say(ctx, "модераторы не запускают ответы (по умолчанию для всех правил и счётчиков): " .. val)
+    elseif key == "helix" and (val == "on" or val == "off") then
+        cmd_helix(ctx, { words[1], "helix", val })
     elseif key == "live" and (val == "on" or val == "off") then
         E.cfg.only_when_live = (val == "on")
         E.save()
         say(ctx, "отвечать только когда идёт стрим: " .. val)
     else
-        say(ctx, "использование: /autoreply set usercd|rulecd|gap <секунды>  |  set live|skipmods|mutelurkers|backfire on|off   (подробнее: /autoreply help set)")
+        say(ctx, "использование: /autoreply set usercd|rulecd|gap <секунды>  |  set live|skipmods|mutelurkers|backfire|helix on|off   (подробнее: /autoreply help set)")
     end
 end
 
@@ -1102,7 +1276,7 @@ end
 -- /autoreply rule <name|id> [enable|disable|remove|test <text>]
 local function cmd_rule(ctx, words)
     if not words[3] then
-        say(ctx, "использование: /autoreply rule <номер или имя> [enable|disable|remove|channel <канал|all|here>|skip ...|test <текст>]   (подробнее: /autoreply help names)")
+        say(ctx, "использование: /autoreply rule <номер или имя> [enable|disable|remove|channel <канал|all|here>|skip ...|mode mention|thread|test <текст>]   (подробнее: /autoreply help names)")
         return
     end
     local rule = N.find(E.cfg.rules, words[3])
@@ -1135,10 +1309,24 @@ local function cmd_rule(ctx, words)
         warn_unwatched(ctx, chans)
     elseif verb == "skip" then
         handle_skip(ctx, rule, { table.unpack(words, 5) }, "/autoreply rule " .. words[3] .. " skip")
+    elseif verb == "mode" or verb == "reply" then
+        if not words[5] then
+            say(ctx, string.format("правило %s отвечает: %s. Сменить: /autoreply rule %s mode mention|thread",
+                N.label(rule), rule.reply_mode == "thread" and "ответом (Reply) на сообщение" or "обычным сообщением", words[3]))
+            return
+        end
+        local mode, err = parse_mode(words[5])
+        if err then
+            say(ctx, "ошибка: " .. err)
+            return
+        end
+        E.set_reply_mode(rule, mode)
+        say(ctx, string.format("правило %s теперь отвечает: %s.", N.label(rule),
+            mode == "thread" and "ответом (Reply) на сообщение написавшего" or "обычным сообщением"))
     elseif RULE_OP_DONE[verb] then
         cmd_rule_op(ctx, { words[1], verb, words[3] }, verb)
     else
-        say(ctx, "неизвестное действие «" .. words[4] .. "»: доступны enable, disable, remove, test, channel, skip.")
+        say(ctx, "неизвестное действие «" .. words[4] .. "»: доступны enable, disable, remove, test, channel, skip, mode.")
     end
 end
 
@@ -1228,6 +1416,8 @@ function M.handle(ctx)
         cmd_redeem(ctx, words)
     elseif sub == "protect" then
         cmd_protect(ctx, words)
+    elseif sub == "helix" then
+        cmd_helix(ctx, words)
     elseif sub == "set" then
         cmd_set(ctx, words)
     elseif sub == "reload" then
