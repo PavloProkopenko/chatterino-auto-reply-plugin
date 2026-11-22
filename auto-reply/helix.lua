@@ -109,10 +109,17 @@ local function form(t, order)
     return table.concat(parts, "&")
 end
 
+-- c2.HTTPMethod is keyed Get/Post/Put/Delete/Patch (not upper case).
+local METHODS = { GET = "Get", POST = "Post", PUT = "Put", DELETE = "Delete", PATCH = "Patch" }
+
 -- cb(status, body, err). Replaced in tests.
 function H.http(method, url, headers, body, cb)
     local ok, err = pcall(function()
-        local req = c2.HTTPRequest.create(c2.HTTPMethod[method], url)
+        local m = c2.HTTPMethod[METHODS[method] or ""]
+        if m == nil then
+            error("unknown HTTP method " .. tostring(method))
+        end
+        local req = c2.HTTPRequest.create(m, url)
         for k, v in pairs(headers or {}) do req:set_header(k, v) end
         if body then req:set_payload(body) end
         req:set_timeout(15000)
