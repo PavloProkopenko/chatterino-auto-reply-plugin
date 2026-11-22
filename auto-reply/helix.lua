@@ -7,9 +7,10 @@ local util = require("util")
 
 local H = {}
 
--- Client ID of a registered Twitch application (public client type). Empty by default:
--- set it with `/autoreply helix clientid <id>` (stored in helix.json).
-H.CLIENT_ID = ""
+-- Client ID of the Auto Reply Twitch application (public client type; not a secret, the device-code
+-- flow sends no client secret). A client_id stored in helix.json (`/autoreply helix clientid <id>`) wins.
+-- The web UI has the same value in src/shared/twitch.ts.
+H.CLIENT_ID = "8lfaf5eoy5pom8c3hiqxol2prz6iwo"
 
 local FILE = "helix.json"
 local SCOPES = "channel:read:redemptions moderation:read channel:read:vips"
