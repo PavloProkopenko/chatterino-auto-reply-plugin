@@ -33,15 +33,23 @@ local function read_all(name)
     return d
 end
 
-function H.load()
-    store = {}
-    local raw = read_all(FILE)
-    if raw and raw ~= "" then
-        local ok, t = pcall(json.parse, raw)
-        if ok and type(t) == "table" then
-            store = t
-        end
+local last_text = nil -- text of helix.json as last read or written by us
+
+local function parse_store(raw)
+    if raw == nil or raw == "" then
+        return {}
     end
+    local ok, t = pcall(json.parse, raw)
+    if ok and type(t) == "table" then
+        return t
+    end
+    return nil
+end
+
+function H.load()
+    local raw = read_all(FILE)
+    last_text = raw
+    store = parse_store(raw) or {}
 end
 
 local function save()
@@ -51,6 +59,34 @@ local function save()
     if not f then return false end
     f:write(out)
     f:close()
+    last_text = out
+    return true
+end
+
+-- The web UI may write helix.json (login/logout) while the plugin runs. Adopt such a change;
+-- an unreadable (half-written) file keeps the current state until the next write.
+-- Returns true when the file was adopted.
+function H.reload_if_changed()
+    local raw = read_all(FILE)
+    if raw == last_text then
+        return false
+    end
+    local t = parse_store(raw)
+    last_text = raw
+    if t == nil then
+        return false
+    end
+    local was_in, was_login = H.logged_in(), store.login
+    store = t
+    local now_in = H.logged_in()
+    if now_in and (not was_in or store.login ~= was_login) then
+        H.notify("вход в Twitch выполнен через сайт: " .. tostring(store.login or "?"))
+    elseif was_in and not now_in then
+        H.notify("вход в Twitch снят (через сайт).")
+    end
+    if H.sync_eventsub then
+        pcall(H.sync_eventsub)
+    end
     return true
 end
 
@@ -65,6 +101,7 @@ function H.set_client_id(id)
     if type(id) ~= "string" or not id:match("^[%w]+$") or #id < 10 then
         return false
     end
+    H.reload_if_changed() -- never overwrite a newer file written by the web UI
     store.client_id = id
     save()
     return true
@@ -143,6 +180,7 @@ end
 local login_gen = 0 -- bumping it cancels a running login
 
 local function adopt_token(t, cb)
+    H.reload_if_changed()
     store.access_token = t.access_token
     if type(t.refresh_token) == "string" then store.refresh_token = t.refresh_token end
     store.expires_at = util.now_s() + (tonumber(t.expires_in) or 3600)
@@ -213,6 +251,7 @@ end
 
 function H.logout()
     login_gen = login_gen + 1
+    H.reload_if_changed()
     local tok = store.access_token
     local cid = H.client_id()
     if tok and cid then
@@ -230,6 +269,7 @@ local refreshing = nil -- list of waiting callbacks while a refresh runs
 
 -- cb(token|nil, err)
 local function with_token(cb, force)
+    H.reload_if_changed()
     if not H.logged_in() then
         cb(nil, "вход не выполнен (/autoreply helix login)")
         return

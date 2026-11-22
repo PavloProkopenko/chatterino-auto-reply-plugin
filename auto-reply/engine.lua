@@ -704,6 +704,7 @@ end
 -- Called every few seconds: picks up edits made outside the plugin.
 function E.watch_config()
     pcall(E.check_code_update)
+    pcall(helix.reload_if_changed)
     local raw = config.read_raw()
     if raw == nil or raw == E.last_text then
         return false
