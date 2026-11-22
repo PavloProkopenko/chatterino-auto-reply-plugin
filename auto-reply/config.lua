@@ -32,6 +32,7 @@ function M.defaults()
         next_redeem_id = 1,
         redeems = {},
         protect_users = {}, -- never muted by a redeem (mods, bots, vips)
+        unprotect_users = {}, -- explicit exceptions: MAY be muted although a badge, protect_users or bots say otherwise
         mute_lurkers = false, -- false: target must have chatted in the last 2h
         backfire = true, -- protected target -> the redeemer gets the mute
         helix_enabled = false, -- opt-in Twitch API (rewards via EventSub, user lookup, mods/VIPs)
@@ -120,6 +121,19 @@ function M.parse(raw, quiet)
     if type(cfg.timers) ~= "table" then cfg.timers = {} end
     if type(cfg.next_timer_id) ~= "number" then cfg.next_timer_id = 1 end
     if type(cfg.protect_users) ~= "table" then cfg.protect_users = {} end
+    -- exceptions: lower-case logins only, no duplicates; anything else is dropped
+    if type(cfg.unprotect_users) ~= "table" then
+        cfg.unprotect_users = {}
+    else
+        local clean = {}
+        for _, u in ipairs(cfg.unprotect_users) do
+            u = type(u) == "string" and util.norm_user(u) or ""
+            if u:match("^[%w_]+$") and not util.contains(clean, u) then
+                clean[#clean + 1] = u
+            end
+        end
+        cfg.unprotect_users = clean
+    end
     if type(cfg.next_redeem_id) ~= "number" then cfg.next_redeem_id = 1 end
     if type(cfg.mute_lurkers) ~= "boolean" then cfg.mute_lurkers = false end
     if type(cfg.backfire) ~= "boolean" then cfg.backfire = true end

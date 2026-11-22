@@ -7,7 +7,7 @@ local C = {}
 
 local SUBCOMMANDS = {
     "on", "off", "toggle", "status", "channel", "add", "new", "list", "test", "remove",
-    "enable", "disable", "timer", "ignore", "redeem", "protect", "set", "reload", "help",
+    "enable", "disable", "timer", "ignore", "redeem", "protect", "unprotect", "set", "reload", "help",
     "cancel", "back", "rule", "rename", "helix",
 }
 local TIMER_VERBS = { "add", "list", "on", "off", "reset", "set", "remove", "format", "category", "skip" }
@@ -149,6 +149,9 @@ local function candidates(args)
     elseif sub == "protect" then
         if n == 1 then return { "add", "remove", "list" } end
         if n == 2 and prev == "remove" then return cfg.protect_users end
+    elseif sub == "unprotect" then
+        if n == 1 then return { "add", "remove", "list" } end
+        if n == 2 and prev == "remove" then return cfg.unprotect_users end
     elseif sub == "redeem" or sub == "mute" then
         if n == 1 then return concat_lists(REDEEM_VERBS, names_of(cfg.redeems)) end
         if n == 2 and not REDEEM_VERB_SET[prev] then return REDEEM_VERBS end -- name-first form

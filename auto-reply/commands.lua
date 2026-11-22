@@ -167,7 +167,7 @@ local TOPICS = {
         },
     },
     {
-        key = "redeem", aliases = { "mute", "protect" },
+        key = "redeem", aliases = { "mute", "protect", "unprotect" },
         summary = "авто-мут и авто-размут по наградам за баллы канала",
         lines = {
             "Авто-модерация по наградам: зритель покупает награду и пишет в поле ввода ник (или @ник), бот сам пишет /timeout или /untimeout. Нужны права модератора или стримера, награда должна требовать ввод текста. Название награды берётся из строки «Redeemed ...» в чате, достаточно части названия (регистр не важен); если в названии есть пробелы, берите его в кавычки. Время мута: 10m, 1h, 1d (до 14d). Правило привязано к текущему каналу.",
@@ -178,6 +178,8 @@ local TOPICS = {
             "/autoreply redeem list | remove <id> | enable <id> | disable <id> | debug on|off",
             "Защита: этих пользователей мутить нельзя (владелец канала, ваш аккаунт, игнор-список, боты вроде Nightbot, модераторы, которых плагин увидел в чате по значку). Остальных (модераторов без сообщений, VIP) добавьте вручную. Если зритель выбрал защищённого, мут получает он сам (backfire); если и он защищён, ничего не происходит.",
             "/autoreply protect add|remove|list <пользователь>",
+            "Исключения: чтобы конкретного модератора, VIP или бота МОЖНО было мутить наградой (значок модератора и список защищённых на него не действуют), добавьте его в исключения. Владельца канала и ваш аккаунт мутить нельзя всегда. protect add снимает исключение.",
+            "/autoreply unprotect add|remove|list <пользователь>",
             "mutelurkers: off = мутить можно только тех, кто писал в чат за последние 2 часа (защита от опечаток), on = мутить можно любого. backfire: on = защищённый ник возвращает мут автору (по умолчанию), off = просто отказ.",
             "/autoreply set mutelurkers on|off  |  /autoreply set backfire on|off",
             "Если Chatterino не показывает название награды, включите Twitch API (help helix): тогда награды приходят напрямую от Twitch (EventSub) с точным названием и введённым текстом, а ник проверяется на существование (не найден: сообщение в чат-окне, мут не выполняется). Работает для каналов, чей владелец выполнил helix login.",
@@ -866,11 +868,19 @@ local function cmd_protect(ctx, words)
     local list = E.cfg.protect_users
     if sub == "list" then
         say(ctx, "защищены от мута: " .. (#list > 0 and table.concat(list, ", ") or "никто"))
+        local ex = E.cfg.unprotect_users
+        if #ex > 0 then
+            say(ctx, "исключения, которых можно мутить даже если они модераторы/боты: " .. table.concat(ex, ", ") .. " (/autoreply unprotect)")
+        end
     elseif sub == "add" and user ~= "" then
+        local ex = util.contains(E.cfg.unprotect_users, user)
+        if ex then
+            table.remove(E.cfg.unprotect_users, ex) -- protecting someone cancels their exception
+        end
         if not util.contains(list, user) then
             list[#list + 1] = user
-            E.save()
         end
+        E.save()
         say(ctx, user .. " защищён от мута по наградам.")
     elseif sub == "remove" and user ~= "" then
         local i = util.contains(list, user)
@@ -883,6 +893,43 @@ local function cmd_protect(ctx, words)
         end
     else
         say(ctx, "использование: /autoreply protect add|remove|list <пользователь>   (подробнее: /autoreply help redeem)")
+    end
+end
+
+-- unprotect add|remove|list <user>: explicit exceptions, these users MAY be muted by a reward even when a
+-- moderator badge, protect_users or the bot list would protect them. The channel owner and you stay protected.
+local function cmd_unprotect(ctx, words)
+    local sub, user = words[3], util.norm_user(words[4])
+    local list = E.cfg.unprotect_users
+    if sub == "list" then
+        say(ctx, "можно мутить (исключения из защиты): " .. (#list > 0 and table.concat(list, ", ") or "никто"))
+    elseif sub == "add" and user ~= "" then
+        if not user:match("^[%w_]+$") or #user > 25 then
+            say(ctx, "«" .. user .. "» не похоже на ник Twitch.")
+        elseif user == U.my_login() or user == util.norm_channel(ctx.channel:get_name()) then
+            say(ctx, user .. ": владельца канала и вас самих мутить нельзя, исключение не добавлено.")
+        else
+            local i = util.contains(E.cfg.protect_users, user)
+            if i then
+                table.remove(E.cfg.protect_users, i)
+            end
+            if not util.contains(list, user) then
+                list[#list + 1] = user
+            end
+            E.save()
+            say(ctx, user .. ": теперь его можно мутить наградой, даже если он модератор или бот.")
+        end
+    elseif sub == "remove" and user ~= "" then
+        local i = util.contains(list, user)
+        if i then
+            table.remove(list, i)
+            E.save()
+            say(ctx, user .. " снова защищён по обычным правилам (значок модератора, список защищённых).")
+        else
+            say(ctx, user .. " не было в исключениях.")
+        end
+    else
+        say(ctx, "использование: /autoreply unprotect add|remove|list <пользователь>   (подробнее: /autoreply help redeem)")
     end
 end
 
@@ -1416,6 +1463,8 @@ function M.handle(ctx)
         cmd_redeem(ctx, words)
     elseif sub == "protect" then
         cmd_protect(ctx, words)
+    elseif sub == "unprotect" then
+        cmd_unprotect(ctx, words)
     elseif sub == "helix" then
         cmd_helix(ctx, words)
     elseif sub == "set" then

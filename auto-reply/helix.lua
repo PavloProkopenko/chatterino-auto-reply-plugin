@@ -13,7 +13,7 @@ local H = {}
 H.CLIENT_ID = "8lfaf5eoy5pom8c3hiqxol2prz6iwo"
 
 local FILE = "helix.json"
-local SCOPES = "channel:read:redemptions moderation:read channel:read:vips"
+local SCOPES = "channel:read:redemptions moderation:read channel:read:vips user:read:moderated_channels"
 local ID_URL = "https://id.twitch.tv/oauth2"
 local API_URL = "https://api.twitch.tv/helix"
 local ES_URL = "wss://eventsub.wss.twitch.tv/ws"

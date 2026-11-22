@@ -588,7 +588,7 @@ end
 
 local LIVE_FIELDS = { enabled = true, started_at = true, game_id = true }
 local SETTING_KEYS = {
-    "channels", "ignore_users", "protect_users", "per_user_cooldown", "per_rule_cooldown",
+    "channels", "ignore_users", "protect_users", "unprotect_users", "per_user_cooldown", "per_rule_cooldown",
     "global_min_gap", "only_when_live", "skip_mods", "mute_lurkers", "backfire", "helix_enabled",
 }
 
@@ -897,8 +897,13 @@ local function note_user(chan_name, msg, login)
 end
 
 local function is_protected(chan_name, login, me)
-    return login == chan_name or login == me
-        or util.contains(E.cfg.protect_users, login) ~= nil
+    if login == chan_name or login == me then
+        return true -- the channel owner cannot be muted, and never ourselves
+    end
+    if util.contains(E.cfg.unprotect_users, login) ~= nil then
+        return false -- an explicit exception wins over badges, protect_users, bots and ignore_users
+    end
+    return util.contains(E.cfg.protect_users, login) ~= nil
         or util.contains(E.cfg.ignore_users, login) ~= nil
         or DEFAULT_BOTS[login] == true
         or mods[chan_name .. "|" .. login] == true
