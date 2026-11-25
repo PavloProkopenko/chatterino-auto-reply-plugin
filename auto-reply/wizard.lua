@@ -40,6 +40,8 @@ local function ask_value(ctx)
         end
     elseif t == "anyword" then
         say(ctx, "Введите слова через | (например: /autoreply qq|привет|hi):")
+    elseif t == "noword" then
+        say(ctx, "Введите слова-исключения через | (сообщение с любым из них не сработает): /autoreply лет|ей|ему")
     elseif t == "pattern" then
         say(ctx, "Введите шаблон Lua (это не regex), например: /autoreply ^!hello%s*$")
     else
@@ -186,7 +188,13 @@ function W.answer(ctx, words)
         if YES[first] then
             ask_type(ctx)
         elseif NO[first] then
-            ask_reply(ctx)
+            local pok, perr = rules.validate_set(draft.conds)
+            if not pok then
+                say(ctx, perr .. ". Добавьте обычное условие.")
+                ask_type(ctx)
+            else
+                ask_reply(ctx)
+            end
         else
             say(ctx, "ответьте /autoreply 1 (добавить условие) или /autoreply 2 (перейти к ответу).")
         end

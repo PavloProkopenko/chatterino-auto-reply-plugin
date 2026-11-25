@@ -262,6 +262,10 @@ function E.add_rule(conditions, reply, channels, name, skip, reply_mode)
             return nil, c.type .. ": " .. err
         end
     end
+    local sok, serr = rules.validate_set(conditions)
+    if not sok then
+        return nil, serr
+    end
     local rok, rerr = E.check_reply(reply)
     if not rok then
         return nil, rerr
@@ -363,6 +367,10 @@ function E.add_timer(conditions, channel, reply, format, name, skip)
         if not ok then
             return nil, c.type .. ": " .. err
         end
+    end
+    local sok, serr = rules.validate_set(conditions)
+    if not sok then
+        return nil, serr
     end
     local rok, rerr = E.check_reply(reply)
     if not rok then

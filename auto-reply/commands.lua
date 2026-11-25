@@ -34,7 +34,7 @@ local TOPICS = {
     },
     {
         key = "add", aliases = { "rule" },
-        summary = "добавить правило (keyword, word, anyword, mention, flag, pattern, условия через +)",
+        summary = "добавить правило (keyword, word, anyword, noword, mention, flag, pattern, условия через +)",
         lines = {
             "Проще всего создать правило пошагово: /autoreply new. Что значит каждый тип условия: /autoreply help types (подробно с примером: help add <тип>).",
             "/autoreply new",
@@ -42,6 +42,7 @@ local TOPICS = {
             '/autoreply add keyword|word|pattern "<текст>" <ответ>',
             "anyword = любое из нескольких слов (отдельное слово, регистр не важен, работает и с русским). Варианты через знак |. Ответ может содержать {user}: туда подставится ник написавшего. Пример: add mention + anyword \"qq|привет|hi\" @{user} qq",
             '/autoreply add anyword "<слово1|слово2|слово3>" <ответ>',
+            "noword = исключение: сообщение НЕ должно содержать ни одного из слов (целые слова через |). Само по себе не работает, нужно хотя бы одно обычное условие. Пример: add anyword \"сколько|скок\" + noword \"лет|ей|ему\" ...",
             "Правило на упоминание: срабатывает, когда кто-то пишет @ваш_ник или ваш ник.",
             "/autoreply add mention <ответ>",
             "Правило по типу сообщения: first = первое сообщение зрителя, highlighted = выделенное, reply = ответ на сообщение, announcement = объявление, sub = подписка, cheer = биты.",
@@ -65,7 +66,7 @@ local TOPICS = {
                 out[#out + 1] = t .. " — " .. rules.TYPE_INFO[t].what
             end
             out[#out + 1] = "Пример и синтаксис конкретного типа: /autoreply help add <тип>. Несколько условий сразу: знак + (все должны совпасть)."
-            out[#out + 1] = "/autoreply help add keyword|word|anyword|mention|flag|pattern"
+            out[#out + 1] = "/autoreply help add keyword|word|anyword|mention|flag|pattern|noword"
             return out
         end)(),
     },
@@ -508,7 +509,7 @@ end
 
 local function add_usage(ctx)
     say(ctx, 'использование: /autoreply add [name=<имя>] [channel=<канал[,канал]|here|all>] [skip=<mods|nomods|ник,ник>] [mode=<mention|thread>] <условие> [+ <условие> ...] <ответ>')
-    say(ctx, 'условия: keyword|word|anyword|pattern "текст", flag <имя>, mention')
+    say(ctx, 'условия: keyword|word|anyword|noword|pattern "текст", flag <имя>, mention')
     say(ctx, 'пример: /autoreply add word "привет" Привет, {user}!')
     say(ctx, "подробнее: /autoreply help add (типы: /autoreply help types), или пошагово: /autoreply new")
 end

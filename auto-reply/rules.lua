@@ -1,7 +1,11 @@
 -- Trigger matching. Pure functions where possible (flags are looked up lazily).
 local M = {}
 
-M.TYPES = { "keyword", "word", "anyword", "mention", "flag", "pattern" }
+M.TYPES = { "keyword", "word", "anyword", "mention", "flag", "pattern", "noword" }
+
+-- Negative conditions: match when the text does NOT contain the thing. A rule needs
+-- at least one ordinary condition next to them (see M.validate_set / M.matches).
+M.NEGATIVE = { noword = true }
 
 function M.is_type(s)
     for _, t in ipairs(M.TYPES) do
@@ -62,6 +66,11 @@ M.TYPE_INFO = {
         what = "шаблон Lua для опытных (это НЕ regex); если не уверены, берите keyword или word",
         syntax = '/autoreply add pattern "<шаблон Lua>" <ответ>',
         example = '/autoreply add pattern "^!hello%s*$" Привет!',
+    },
+    noword = {
+        what = "ИСКЛЮЧЕНИЕ: сообщение НЕ должно содержать ни одного из слов (варианты через |, целые слова); ставится рядом с обычным условием через +",
+        syntax = '/autoreply add <условие> + noword "<слово1|слово2>" <ответ>',
+        example = '/autoreply add anyword "сколько|скок" + noword "лет|ей|ему" @{user} вопрос не про возраст',
     },
 }
 
@@ -136,7 +145,7 @@ function M.validate(rtype, match)
         if not match or match == "" then
             return false, "нужен непустой текст для поиска"
         end
-    elseif rtype == "anyword" then
+    elseif rtype == "anyword" or rtype == "noword" then
         if not match or #split_alternatives(match) == 0 then
             return false, 'нужны слова через |, например "qq|hi|привет"'
         end
@@ -158,6 +167,17 @@ function M.validate(rtype, match)
         return false, "неизвестный тип «" .. tostring(rtype) .. "» (доступны: " .. table.concat(M.TYPES, ", ") .. ")"
     end
     return true
+end
+
+-- A condition list must contain at least one ordinary (non-negative) condition,
+-- otherwise it would match almost every message. Returns ok, err.
+function M.validate_set(conditions)
+    for _, c in ipairs(conditions) do
+        if not M.NEGATIVE[c.type] then
+            return true
+        end
+    end
+    return false, "нужно хотя бы одно обычное условие (noword только исключает, одного его мало)"
 end
 
 -- Builds a flags bitmask from friendly names. Returns mask, unknown_names.
@@ -233,7 +253,18 @@ function M.describe(rule)
 end
 
 function M.matches(rule, text, flags, me)
-    for _, c in ipairs(M.conditions(rule)) do
+    local conds = M.conditions(rule)
+    local has_positive = false
+    for _, c in ipairs(conds) do
+        if not M.NEGATIVE[c.type] then
+            has_positive = true
+            break
+        end
+    end
+    if not has_positive then
+        return false -- never "everything except ..." (e.g. a hand-edited config)
+    end
+    for _, c in ipairs(conds) do
         if not M.matches_one(c, text, flags, me) then
             return false
         end
@@ -256,6 +287,13 @@ function M.matches_one(rule, text, flags, me)
             end
         end
         return false
+    elseif rtype == "noword" then
+        for _, alt in ipairs(split_alternatives(rule.match or "")) do
+            if find_word(lower, M.lower(alt)) then
+                return false
+            end
+        end
+        return true
     elseif rtype == "mention" then
         if not me or me == "" then
             return false
